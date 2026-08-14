@@ -143,9 +143,20 @@ supported.
 
 When multiple keyboards are discovered, a keyboard with a link key in the
 persistent bond database is selected before an unpaired keyboard. The CDC
-console accepts `status` to display the state and discovered devices, and
-`forget` to delete all stored Classic link keys and disconnect the active
-keyboard. `forget` requires pairing again on the next connection.
+console accepts the following commands:
+
+- `help` — list available commands.
+- `status` — display state, selected address, and discovered devices.
+- `scan` — scan without automatically connecting; this requires the Idle state.
+- `connect XX:XX:XX:XX:XX:XX` — select, persist, and connect to a keyboard from
+  the most recent scan.
+- `disconnect` — disconnect and suspend automatic reconnection.
+- `reconnect` — resume automatic reconnection to the selected keyboard.
+- `forget` — delete the selected address and all stored Classic link keys.
+
+The selected keyboard address uses the same flash-backed BTstack TLV store as
+the Classic link-key database and is restored after reboot. `forget` requires
+pairing again on the next connection.
 
 If a saved Classic link key is rejected and the controller requests a PIN
 again, the stale key is deleted before pairing. A newly generated key is

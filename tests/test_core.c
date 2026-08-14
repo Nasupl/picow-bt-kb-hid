@@ -6,6 +6,7 @@
 
 #include "device_manager.h"
 #include "bt_state.h"
+#include "control_command.h"
 #include "hid_boot_report.h"
 #include "hid_channels.h"
 #include "sdp_parser.h"
@@ -231,6 +232,34 @@ static void test_sdp_parser(void) {
     assert(parser.completed_attribute_count == 1);
 }
 
+static void test_control_commands(void) {
+    control_command_t command;
+
+    assert(control_command_parse("help", &command));
+    assert(command.type == CONTROL_COMMAND_HELP);
+    assert(control_command_parse("  status  ", &command));
+    assert(command.type == CONTROL_COMMAND_STATUS);
+    assert(control_command_parse("scan", &command));
+    assert(command.type == CONTROL_COMMAND_SCAN);
+    assert(control_command_parse("disconnect", &command));
+    assert(command.type == CONTROL_COMMAND_DISCONNECT);
+    assert(control_command_parse("reconnect", &command));
+    assert(command.type == CONTROL_COMMAND_RECONNECT);
+    assert(control_command_parse("forget", &command));
+    assert(command.type == CONTROL_COMMAND_FORGET);
+
+    assert(control_command_parse("connect 01:23:45:67:89:aB", &command));
+    assert(command.type == CONTROL_COMMAND_CONNECT);
+    const uint8_t expected[] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xab};
+    assert(memcmp(command.address, expected, sizeof(expected)) == 0);
+
+    assert(!control_command_parse("connect 01:23:45:67:89", &command));
+    assert(command.type == CONTROL_COMMAND_INVALID);
+    assert(!control_command_parse("connect nope", &command));
+    assert(!control_command_parse("unknown", &command));
+    assert(strstr(control_command_help(), "connect") != NULL);
+}
+
 int main(void) {
     test_boot_reports();
     test_device_manager();
@@ -238,6 +267,7 @@ int main(void) {
     test_bluetooth_state_machine();
     test_hid_channel_state();
     test_sdp_parser();
+    test_control_commands();
     puts("core host tests: PASS");
     return 0;
 }

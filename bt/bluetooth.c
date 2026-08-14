@@ -7,7 +7,9 @@
 #include "bt_state.h"
 #include "btstack.h"
 #include "btstack_hid.h"
+#include "btstack_tlv.h"
 #include "classic/sdp_client.h"
+#include "control_command.h"
 #include "device_manager.h"
 #include "hid_boot_report.h"
 #include "hid_channels.h"
@@ -43,6 +45,46 @@ static char command_buffer[32];
 static uint8_t command_length;
 
 static SdpParser sdp_parser;
+static bd_addr_t selected_device_addr;
+static bool selected_device_valid;
+static bool auto_connect_enabled = true;
+
+#define SELECTED_DEVICE_TAG                                                \
+    ((((uint32_t) 'P') << 24) | (((uint32_t) 'K') << 16) |               \
+     (((uint32_t) 'B') << 8) | (uint32_t) 'D')
+
+static void load_selected_device(void) {
+    const btstack_tlv_t *tlv = NULL;
+    void *context = NULL;
+    btstack_tlv_get_instance(&tlv, &context);
+    if (tlv == NULL) {
+        return;
+    }
+    int size = tlv->get_tag(context, SELECTED_DEVICE_TAG,
+                            selected_device_addr,
+                            sizeof(selected_device_addr));
+    selected_device_valid = size == (int) sizeof(selected_device_addr);
+}
+
+static bool store_selected_device(const bd_addr_t address) {
+    const btstack_tlv_t *tlv = NULL;
+    void *context = NULL;
+    btstack_tlv_get_instance(&tlv, &context);
+    if (tlv == NULL) {
+        return false;
+    }
+    return tlv->store_tag(context, SELECTED_DEVICE_TAG, address,
+                          sizeof(bd_addr_t)) == 0;
+}
+
+static void delete_selected_device(void) {
+    const btstack_tlv_t *tlv = NULL;
+    void *context = NULL;
+    btstack_tlv_get_instance(&tlv, &context);
+    if (tlv != NULL) {
+        tlv->delete_tag(context, SELECTED_DEVICE_TAG);
+    }
+}
 
 static void transition_to_state(bt_state_t new_state) {
     if (current_state != new_state) {
@@ -81,6 +123,9 @@ static void inquiry_timer_handler(btstack_timer_source_t *ts) {
 }
 
 static void start_idle_timer(void) {
+    if (!auto_connect_enabled) {
+        return;
+    }
     if (inquiry_timer_armed) {
         usb_serial_printf("[BT] Inquiry retry already scheduled\r\n");
         return;
@@ -90,6 +135,29 @@ static void start_idle_timer(void) {
     btstack_run_loop_set_timer(&inquiry_timer, 5000);
     btstack_run_loop_add_timer(&inquiry_timer);
     inquiry_timer_armed = true;
+}
+
+static bool begin_connection(const bd_addr_t address) {
+    if (current_state != STATE_IDLE && current_state != STATE_INQUIRY) {
+        usb_serial_printf("[BT] Connect request ignored in state=%s\r\n",
+                          bt_state_name(current_state));
+        return false;
+    }
+    if (inquiry_timer_armed) {
+        btstack_run_loop_remove_timer(&inquiry_timer);
+        inquiry_timer_armed = false;
+    }
+    usb_serial_printf("[BT] Connecting to %s...\r\n", bd_addr_to_str(address));
+    transition_to_state(STATE_CONNECTING);
+    uint8_t status = hci_send_cmd(&hci_create_connection, address,
+                                  hci_usable_acl_packet_types(), 0, 0, 0, 1);
+    if (status != ERROR_CODE_SUCCESS) {
+        usb_serial_printf("[BT] Connection failed status=0x%02x\r\n", status);
+        transition_to_state(STATE_IDLE);
+        start_idle_timer();
+        return false;
+    }
+    return true;
 }
 
 static void log_device(Device const *device) {
@@ -403,22 +471,26 @@ static void hci_event_handler(uint8_t packet_type, uint16_t channel,
             device_manager_print_devices(&device_manager);
 
             bd_addr_t target_addr;
-            if (device_manager_get_connection_target(&device_manager, target_addr)) {
+            bool have_target = false;
+            if (auto_connect_enabled && selected_device_valid) {
+                Device *selected = device_manager_find(
+                    &device_manager, selected_device_addr);
+                if (selected != NULL && selected->hid_supported) {
+                    memcpy(target_addr, selected_device_addr, sizeof(target_addr));
+                    have_target = true;
+                }
+            }
+            if (auto_connect_enabled && !have_target) {
+                have_target = device_manager_get_connection_target(
+                    &device_manager, target_addr);
+            }
+            if (have_target) {
                 Device *target = device_manager_find(&device_manager, target_addr);
                 if (target != NULL && target->bonded) {
                     usb_serial_printf("[BT] Selecting bonded keyboard %s\r\n",
                                       bd_addr_to_str(target_addr));
                 }
-                usb_serial_printf("[BT] Connecting to %s...\r\n", bd_addr_to_str(target_addr));
-                usb_serial_printf("[BT] Connecting...\r\n");
-                transition_to_state(STATE_CONNECTING);
-
-                uint8_t status = hci_send_cmd(&hci_create_connection, target_addr, hci_usable_acl_packet_types(), 0, 0, 0, 1);
-                if (status != 0) {
-                    usb_serial_printf("[BT] Connection failed status=0x%02x\r\n", status);
-                    transition_to_state(STATE_IDLE);
-                    start_idle_timer();
-                }
+                begin_connection(target_addr);
             } else {
                 transition_to_state(STATE_IDLE);
                 start_idle_timer();
@@ -774,6 +846,7 @@ void bluetooth_init(void) {
     }
 
     hid_channels_init(&hid_channels);
+    load_selected_device();
     l2cap_init();
     sdp_client_init();
     device_manager_init(&device_manager);
@@ -799,21 +872,109 @@ void bluetooth_task(void) {
                 continue;
             }
             command_buffer[command_length] = '\0';
-            if (strcmp(command_buffer, "forget") == 0) {
-                gap_delete_all_link_keys();
-                device_manager_clear_bonded(&device_manager);
-                usb_serial_printf("[BT] All keyboard bonds deleted\r\n");
-                if (acl_handle != HCI_CON_HANDLE_INVALID) {
-                    gap_disconnect(acl_handle);
+            control_command_t command;
+            if (!control_command_parse(command_buffer, &command)) {
+                usb_serial_printf("[BT] Unknown command: %s\r\n%s\r\n",
+                                  command_buffer, control_command_help());
+                command_length = 0;
+                continue;
+            }
+            switch (command.type) {
+                case CONTROL_COMMAND_HELP:
+                    usb_serial_printf("%s\r\n", control_command_help());
+                    break;
+                case CONTROL_COMMAND_STATUS:
+                    usb_serial_printf(
+                        "[BT] Status state=%s devices=%u auto_connect=%u selected=%s\r\n",
+                        bt_state_name(current_state),
+                        (unsigned int) device_manager.count,
+                        auto_connect_enabled ? 1u : 0u,
+                        selected_device_valid
+                            ? bd_addr_to_str(selected_device_addr) : "<auto>");
+                    device_manager_print_devices(&device_manager);
+                    break;
+                case CONTROL_COMMAND_SCAN:
+                    if (current_state != STATE_IDLE) {
+                        usb_serial_printf("[BT] Scan requires Idle state (current=%s)\r\n",
+                                          bt_state_name(current_state));
+                    } else {
+                        auto_connect_enabled = false;
+                        device_manager_init(&device_manager);
+                        start_inquiry();
+                    }
+                    break;
+                case CONTROL_COMMAND_CONNECT: {
+                    Device *target = device_manager_find(
+                        &device_manager, command.address);
+                    if (target == NULL || !target->hid_supported) {
+                        usb_serial_printf(
+                            "[BT] Keyboard %s not found; run scan first\r\n",
+                            bd_addr_to_str(command.address));
+                    } else if (current_state != STATE_IDLE) {
+                        usb_serial_printf(
+                            "[BT] Connect requires Idle state (current=%s)\r\n",
+                            bt_state_name(current_state));
+                    } else {
+                        memcpy(selected_device_addr, command.address,
+                               sizeof(selected_device_addr));
+                        selected_device_valid = true;
+                        auto_connect_enabled = true;
+                        usb_serial_printf(
+                            "[BT] Selected keyboard saved=%u\r\n",
+                            store_selected_device(selected_device_addr) ? 1u : 0u);
+                        begin_connection(selected_device_addr);
+                    }
+                    break;
                 }
-            } else if (strcmp(command_buffer, "status") == 0) {
-                usb_serial_printf("[BT] Status state=%s devices=%u\r\n",
-                                  bt_state_name(current_state),
-                                  (unsigned int) device_manager.count);
-                device_manager_print_devices(&device_manager);
-            } else {
-                usb_serial_printf("[BT] Unknown command: %s (use status or forget)\r\n",
-                                  command_buffer);
+                case CONTROL_COMMAND_DISCONNECT:
+                    auto_connect_enabled = false;
+                    if (acl_handle != HCI_CON_HANDLE_INVALID) {
+                        gap_disconnect(acl_handle);
+                    } else {
+                        usb_serial_printf("[BT] No active keyboard connection\r\n");
+                    }
+                    break;
+                case CONTROL_COMMAND_RECONNECT: {
+                    auto_connect_enabled = true;
+                    if (acl_handle != HCI_CON_HANDLE_INVALID) {
+                        usb_serial_printf("[BT] Keyboard is already connected\r\n");
+                        break;
+                    }
+                    bd_addr_t target_address;
+                    bool have_target = false;
+                    if (selected_device_valid && device_manager_find(
+                            &device_manager, selected_device_addr) != NULL) {
+                        memcpy(target_address, selected_device_addr,
+                               sizeof(target_address));
+                        have_target = true;
+                    } else {
+                        have_target = device_manager_get_connection_target(
+                            &device_manager, target_address);
+                    }
+                    if (current_state == STATE_IDLE && have_target) {
+                        begin_connection(target_address);
+                    } else if (current_state == STATE_IDLE) {
+                        start_inquiry();
+                    } else {
+                        usb_serial_printf(
+                            "[BT] Reconnect queued; current state=%s\r\n",
+                            bt_state_name(current_state));
+                    }
+                    break;
+                }
+                case CONTROL_COMMAND_FORGET:
+                    auto_connect_enabled = false;
+                    selected_device_valid = false;
+                    delete_selected_device();
+                    gap_delete_all_link_keys();
+                    device_manager_clear_bonded(&device_manager);
+                    usb_serial_printf("[BT] All keyboard bonds deleted\r\n");
+                    if (acl_handle != HCI_CON_HANDLE_INVALID) {
+                        gap_disconnect(acl_handle);
+                    }
+                    break;
+                default:
+                    break;
             }
             command_length = 0;
         } else if (command_length < sizeof(command_buffer) - 1) {

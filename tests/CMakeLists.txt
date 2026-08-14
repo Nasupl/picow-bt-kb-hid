@@ -5,6 +5,7 @@ enable_testing()
 
 add_executable(core_tests
     test_core.c
+    ../bt/control_command.c
     ../bt/device_manager.c
     ../bt/bt_state.c
     ../bt/hid_channels.c

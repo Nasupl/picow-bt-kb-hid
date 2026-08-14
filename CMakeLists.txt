@@ -23,6 +23,7 @@ add_executable(pico_bt_keyboard
     main.c
     bt/bluetooth.c
     bt/bt_state.c
+    bt/control_command.c
     bt/device_manager.c
     bt/hid_boot_report.c
     bt/hid_channels.c
