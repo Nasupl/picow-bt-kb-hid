@@ -1,4 +1,5 @@
 #include "bluetooth_app.h"
+#include "bluetooth_control.h"
 
 #include <stdbool.h>
 #include <string.h>
@@ -10,6 +11,7 @@
 #include "btstack_tlv.h"
 #include "classic/sdp_client.h"
 #include "control_command.h"
+#include "control_request_queue.h"
 #include "device_manager.h"
 #include "hid_boot_report.h"
 #include "hid_channels.h"
@@ -48,6 +50,7 @@ static SdpParser sdp_parser;
 static bd_addr_t selected_device_addr;
 static bool selected_device_valid;
 static bool auto_connect_enabled = true;
+static control_request_queue_t control_requests;
 
 #define SELECTED_DEVICE_TAG                                                \
     ((((uint32_t) 'P') << 24) | (((uint32_t) 'K') << 16) |               \
@@ -839,6 +842,175 @@ static void hci_event_handler(uint8_t packet_type, uint16_t channel,
     }
 }
 
+static void execute_control_request(
+    const bluetooth_control_request_t *request) {
+    switch (request->action) {
+        case BLUETOOTH_CONTROL_HELP:
+            usb_serial_printf("%s\r\n", control_command_help());
+            break;
+        case BLUETOOTH_CONTROL_STATUS:
+            usb_serial_printf(
+                "[BT] Status state=%s devices=%u auto_connect=%u selected=%s\r\n",
+                bt_state_name(current_state),
+                (unsigned int) device_manager.count,
+                auto_connect_enabled ? 1u : 0u,
+                selected_device_valid
+                    ? bd_addr_to_str(selected_device_addr) : "<auto>");
+            device_manager_print_devices(&device_manager);
+            break;
+        case BLUETOOTH_CONTROL_SCAN:
+            if (current_state != STATE_IDLE) {
+                usb_serial_printf(
+                    "[BT] Scan requires Idle state (current=%s)\r\n",
+                    bt_state_name(current_state));
+            } else {
+                auto_connect_enabled = false;
+                device_manager_init(&device_manager);
+                start_inquiry();
+            }
+            break;
+        case BLUETOOTH_CONTROL_CONNECT: {
+            Device *target = device_manager_find(
+                &device_manager, request->address);
+            if (target == NULL || !target->hid_supported) {
+                usb_serial_printf(
+                    "[BT] Keyboard %s not found; run scan first\r\n",
+                    bd_addr_to_str(request->address));
+            } else if (current_state != STATE_IDLE) {
+                usb_serial_printf(
+                    "[BT] Connect requires Idle state (current=%s)\r\n",
+                    bt_state_name(current_state));
+            } else {
+                memcpy(selected_device_addr, request->address,
+                       sizeof(selected_device_addr));
+                selected_device_valid = true;
+                auto_connect_enabled = true;
+                usb_serial_printf(
+                    "[BT] Selected keyboard saved=%u\r\n",
+                    store_selected_device(selected_device_addr) ? 1u : 0u);
+                begin_connection(selected_device_addr);
+            }
+            break;
+        }
+        case BLUETOOTH_CONTROL_DISCONNECT:
+            auto_connect_enabled = false;
+            if (acl_handle != HCI_CON_HANDLE_INVALID) {
+                gap_disconnect(acl_handle);
+            } else {
+                usb_serial_printf("[BT] No active keyboard connection\r\n");
+            }
+            break;
+        case BLUETOOTH_CONTROL_RECONNECT: {
+            auto_connect_enabled = true;
+            if (acl_handle != HCI_CON_HANDLE_INVALID) {
+                usb_serial_printf("[BT] Keyboard is already connected\r\n");
+                break;
+            }
+            bd_addr_t target_address;
+            bool have_target = false;
+            if (selected_device_valid && device_manager_find(
+                    &device_manager, selected_device_addr) != NULL) {
+                memcpy(target_address, selected_device_addr,
+                       sizeof(target_address));
+                have_target = true;
+            } else {
+                have_target = device_manager_get_connection_target(
+                    &device_manager, target_address);
+            }
+            if (current_state == STATE_IDLE && have_target) {
+                begin_connection(target_address);
+            } else if (current_state == STATE_IDLE) {
+                start_inquiry();
+            } else {
+                usb_serial_printf(
+                    "[BT] Reconnect queued; current state=%s\r\n",
+                    bt_state_name(current_state));
+            }
+            break;
+        }
+        case BLUETOOTH_CONTROL_FORGET:
+            auto_connect_enabled = false;
+            selected_device_valid = false;
+            delete_selected_device();
+            gap_delete_all_link_keys();
+            device_manager_clear_bonded(&device_manager);
+            usb_serial_printf("[BT] All keyboard bonds deleted\r\n");
+            if (acl_handle != HCI_CON_HANDLE_INVALID) {
+                gap_disconnect(acl_handle);
+            }
+            break;
+    }
+}
+
+bool bluetooth_control_submit(const bluetooth_control_request_t *request) {
+    return control_request_queue_push(&control_requests, request);
+}
+
+void bluetooth_control_get_snapshot(bluetooth_control_snapshot_t *snapshot) {
+    if (snapshot == NULL) {
+        return;
+    }
+    memset(snapshot, 0, sizeof(*snapshot));
+    const char *state = bt_state_name(current_state);
+    strncpy(snapshot->state, state, sizeof(snapshot->state) - 1);
+    snapshot->auto_connect = auto_connect_enabled;
+    snapshot->has_selected_device = selected_device_valid;
+    if (selected_device_valid) {
+        memcpy(snapshot->selected_device, selected_device_addr,
+               sizeof(snapshot->selected_device));
+    }
+    snapshot->device_count = device_manager.count;
+    if (snapshot->device_count > BLUETOOTH_CONTROL_MAX_DEVICES) {
+        snapshot->device_count = BLUETOOTH_CONTROL_MAX_DEVICES;
+    }
+    for (size_t i = 0; i < snapshot->device_count; ++i) {
+        const Device *source = &device_manager.devices[i];
+        bluetooth_control_device_t *destination = &snapshot->devices[i];
+        memcpy(destination->address, source->address,
+               sizeof(destination->address));
+        if (source->has_name) {
+            strncpy(destination->name, source->name,
+                    sizeof(destination->name) - 1);
+        }
+        destination->rssi = source->rssi;
+        destination->has_rssi = source->has_rssi;
+        destination->keyboard = source->hid_supported;
+        destination->bonded = source->bonded;
+        destination->connected = source->connected;
+    }
+}
+
+static bool submit_parsed_command(const control_command_t *command) {
+    bluetooth_control_request_t request = {0};
+    switch (command->type) {
+        case CONTROL_COMMAND_HELP:
+            request.action = BLUETOOTH_CONTROL_HELP;
+            break;
+        case CONTROL_COMMAND_STATUS:
+            request.action = BLUETOOTH_CONTROL_STATUS;
+            break;
+        case CONTROL_COMMAND_SCAN:
+            request.action = BLUETOOTH_CONTROL_SCAN;
+            break;
+        case CONTROL_COMMAND_CONNECT:
+            request.action = BLUETOOTH_CONTROL_CONNECT;
+            memcpy(request.address, command->address, sizeof(request.address));
+            break;
+        case CONTROL_COMMAND_DISCONNECT:
+            request.action = BLUETOOTH_CONTROL_DISCONNECT;
+            break;
+        case CONTROL_COMMAND_RECONNECT:
+            request.action = BLUETOOTH_CONTROL_RECONNECT;
+            break;
+        case CONTROL_COMMAND_FORGET:
+            request.action = BLUETOOTH_CONTROL_FORGET;
+            break;
+        default:
+            return false;
+    }
+    return bluetooth_control_submit(&request);
+}
+
 void bluetooth_init(void) {
     if (cyw43_arch_init() != PICO_OK) {
         usb_serial_printf("BT: CYW43 initialization failed\r\n");
@@ -846,6 +1018,7 @@ void bluetooth_init(void) {
     }
 
     hid_channels_init(&hid_channels);
+    control_request_queue_init(&control_requests);
     load_selected_device();
     l2cap_init();
     sdp_client_init();
@@ -879,102 +1052,8 @@ void bluetooth_task(void) {
                 command_length = 0;
                 continue;
             }
-            switch (command.type) {
-                case CONTROL_COMMAND_HELP:
-                    usb_serial_printf("%s\r\n", control_command_help());
-                    break;
-                case CONTROL_COMMAND_STATUS:
-                    usb_serial_printf(
-                        "[BT] Status state=%s devices=%u auto_connect=%u selected=%s\r\n",
-                        bt_state_name(current_state),
-                        (unsigned int) device_manager.count,
-                        auto_connect_enabled ? 1u : 0u,
-                        selected_device_valid
-                            ? bd_addr_to_str(selected_device_addr) : "<auto>");
-                    device_manager_print_devices(&device_manager);
-                    break;
-                case CONTROL_COMMAND_SCAN:
-                    if (current_state != STATE_IDLE) {
-                        usb_serial_printf("[BT] Scan requires Idle state (current=%s)\r\n",
-                                          bt_state_name(current_state));
-                    } else {
-                        auto_connect_enabled = false;
-                        device_manager_init(&device_manager);
-                        start_inquiry();
-                    }
-                    break;
-                case CONTROL_COMMAND_CONNECT: {
-                    Device *target = device_manager_find(
-                        &device_manager, command.address);
-                    if (target == NULL || !target->hid_supported) {
-                        usb_serial_printf(
-                            "[BT] Keyboard %s not found; run scan first\r\n",
-                            bd_addr_to_str(command.address));
-                    } else if (current_state != STATE_IDLE) {
-                        usb_serial_printf(
-                            "[BT] Connect requires Idle state (current=%s)\r\n",
-                            bt_state_name(current_state));
-                    } else {
-                        memcpy(selected_device_addr, command.address,
-                               sizeof(selected_device_addr));
-                        selected_device_valid = true;
-                        auto_connect_enabled = true;
-                        usb_serial_printf(
-                            "[BT] Selected keyboard saved=%u\r\n",
-                            store_selected_device(selected_device_addr) ? 1u : 0u);
-                        begin_connection(selected_device_addr);
-                    }
-                    break;
-                }
-                case CONTROL_COMMAND_DISCONNECT:
-                    auto_connect_enabled = false;
-                    if (acl_handle != HCI_CON_HANDLE_INVALID) {
-                        gap_disconnect(acl_handle);
-                    } else {
-                        usb_serial_printf("[BT] No active keyboard connection\r\n");
-                    }
-                    break;
-                case CONTROL_COMMAND_RECONNECT: {
-                    auto_connect_enabled = true;
-                    if (acl_handle != HCI_CON_HANDLE_INVALID) {
-                        usb_serial_printf("[BT] Keyboard is already connected\r\n");
-                        break;
-                    }
-                    bd_addr_t target_address;
-                    bool have_target = false;
-                    if (selected_device_valid && device_manager_find(
-                            &device_manager, selected_device_addr) != NULL) {
-                        memcpy(target_address, selected_device_addr,
-                               sizeof(target_address));
-                        have_target = true;
-                    } else {
-                        have_target = device_manager_get_connection_target(
-                            &device_manager, target_address);
-                    }
-                    if (current_state == STATE_IDLE && have_target) {
-                        begin_connection(target_address);
-                    } else if (current_state == STATE_IDLE) {
-                        start_inquiry();
-                    } else {
-                        usb_serial_printf(
-                            "[BT] Reconnect queued; current state=%s\r\n",
-                            bt_state_name(current_state));
-                    }
-                    break;
-                }
-                case CONTROL_COMMAND_FORGET:
-                    auto_connect_enabled = false;
-                    selected_device_valid = false;
-                    delete_selected_device();
-                    gap_delete_all_link_keys();
-                    device_manager_clear_bonded(&device_manager);
-                    usb_serial_printf("[BT] All keyboard bonds deleted\r\n");
-                    if (acl_handle != HCI_CON_HANDLE_INVALID) {
-                        gap_disconnect(acl_handle);
-                    }
-                    break;
-                default:
-                    break;
+            if (!submit_parsed_command(&command)) {
+                usb_serial_printf("[BT] Control request queue full\r\n");
             }
             command_length = 0;
         } else if (command_length < sizeof(command_buffer) - 1) {
@@ -983,6 +1062,11 @@ void bluetooth_task(void) {
             command_length = 0;
             usb_serial_printf("[BT] Command too long\r\n");
         }
+    }
+
+    bluetooth_control_request_t request;
+    while (control_request_queue_pop(&control_requests, &request)) {
+        execute_control_request(&request);
     }
 
     if (stack_working && !startup_logged && usb_serial_connected()) {

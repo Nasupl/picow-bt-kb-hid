@@ -6,6 +6,7 @@ enable_testing()
 add_executable(core_tests
     test_core.c
     ../bt/control_command.c
+    ../bt/control_request_queue.c
     ../bt/device_manager.c
     ../bt/bt_state.c
     ../bt/hid_channels.c
@@ -14,6 +15,7 @@ add_executable(core_tests
 )
 target_include_directories(core_tests PRIVATE
     ../bt
+    ../include
     stubs
 )
 target_compile_options(core_tests PRIVATE -Wall -Wextra -Werror)

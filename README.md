@@ -77,6 +77,9 @@ The Bluetooth module manages Bluetooth Classic operations using BTstack.
 
 - **`bt/bluetooth.c`**: Initializes BTstack, registers the HCI event handler, and manages the lifecycle of Bluetooth operations. Once the stack is ready and the serial console is connected, it triggers a Bluetooth Classic Inquiry (`gap_inquiry_start`) and logs events to the USB CDC serial interface.
 - **`bt/bt_state.c`**: Defines connection states, names, and allowed transitions.
+- **`bt/control_command.c` / `bt/control_request_queue.c`**: Parse CDC commands
+  and queue connection-management requests for execution in the cooperative
+  Bluetooth task context.
 - **`bt/hid_boot_report.c`**: Validates and parses HIDP Boot Keyboard input and builds LED output packets without depending on BTstack runtime state.
 - **`bt/hid_channels.c`**: Owns HID Control/Interrupt CIDs, channel-open state, Boot Protocol scheduling state, and reconnect-safe LED state.
 - **`bt/sdp_parser.c`**: Reassembles SDP attribute chunks and extracts HID Control/Interrupt PSMs and service metadata.
@@ -157,6 +160,11 @@ console accepts the following commands:
 The selected keyboard address uses the same flash-backed BTstack TLV store as
 the Classic link-key database and is restored after reboot. `forget` requires
 pairing again on the next connection.
+
+`include/bluetooth_control.h` is the presentation-independent interface used by
+CDC and the planned HTTP API. It accepts queued actions and returns a copied
+snapshot containing connection state, the selected address, and discovered
+devices; UI code does not access BTstack or `DeviceManager` directly.
 
 If a saved Classic link key is rejected and the controller requests a PIN
 again, the stale key is deleted before pairing. A newly generated key is
