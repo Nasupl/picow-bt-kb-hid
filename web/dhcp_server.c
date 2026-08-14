@@ -214,7 +214,11 @@ bool dhcp_server_init(dhcp_server_t *server, struct netif *netif) {
         server->pcb = NULL;
         return false;
     }
-    udp_bind_netif(server->pcb, netif);
+    // Do not bind the receive PCB to a netif index. On CYW43 AP mode,
+    // broadcast DHCP frames can be presented through the driver's shared
+    // input netif index even though unicast traffic uses the AP netif. The
+    // dedicated server port and AP-only operating mode constrain reception;
+    // replies are still explicitly sent through server->netif below.
     udp_recv(server->pcb, receive_dhcp, server);
     return true;
 }
