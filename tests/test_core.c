@@ -321,6 +321,17 @@ static void test_control_snapshot_json(void) {
                                         sizeof(too_small), NULL));
     assert(too_small[sizeof(too_small) - 1] == '\0');
     assert(!control_json_write_snapshot(NULL, json, sizeof(json), NULL));
+
+    bluetooth_control_snapshot_t worst_case = {0};
+    memset(worst_case.state, 1, sizeof(worst_case.state) - 1);
+    worst_case.device_count = BLUETOOTH_CONTROL_MAX_DEVICES;
+    for (size_t i = 0; i < worst_case.device_count; ++i) {
+        memset(worst_case.devices[i].name, 1,
+               sizeof(worst_case.devices[i].name) - 1);
+    }
+    char maximum_json[CONTROL_JSON_MAX_SNAPSHOT_SIZE];
+    assert(control_json_write_snapshot(&worst_case, maximum_json,
+                                       sizeof(maximum_json), &written));
 }
 
 int main(void) {

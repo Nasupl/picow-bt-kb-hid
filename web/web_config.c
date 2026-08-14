@@ -15,15 +15,15 @@
 #define WEB_AP_PASSWORD "pico-keyboard"
 #define WEB_MAX_CLIENTS 2
 #define WEB_REQUEST_SIZE 512
-#define WEB_RESPONSE_SIZE 4096
+#define WEB_RESPONSE_HEADER_SIZE 256
 
 typedef struct {
     bool used;
     struct tcp_pcb *pcb;
     size_t request_length;
-    uint8_t idle_polls;
+    uint8_t age_polls;
     char request[WEB_REQUEST_SIZE];
-    char response[WEB_RESPONSE_SIZE];
+    char response_header[WEB_RESPONSE_HEADER_SIZE];
 } web_client_t;
 
 static web_client_t clients[WEB_MAX_CLIENTS];
@@ -32,7 +32,7 @@ static dhcp_server_t dhcp_server;
 // The RP2040 default main stack is only 2 KiB. Keep the status working set in
 // BSS rather than placing more than 4 KiB in handle_request's stack frame.
 static bluetooth_control_snapshot_t status_snapshot;
-static char status_json[3072];
+static char status_json[CONTROL_JSON_MAX_SNAPSHOT_SIZE];
 static bool cdc_was_connected;
 
 static int hex_value(char ch) {
@@ -54,25 +54,27 @@ static bool parse_address(const char *text, uint8_t address[6]) {
     return *text == ' ' || *text == '\0' || *text == '&';
 }
 
-static void close_client(web_client_t *client) {
-    if (client->pcb != NULL) {
-        tcp_arg(client->pcb, NULL);
-        tcp_recv(client->pcb, NULL);
-        tcp_err(client->pcb, NULL);
-        tcp_poll(client->pcb, NULL, 0);
-        if (tcp_close(client->pcb) != ERR_OK) {
-            tcp_abort(client->pcb);
-        }
-    }
+static err_t close_client(web_client_t *client) {
+    struct tcp_pcb *pcb = client->pcb;
     memset(client, 0, sizeof(*client));
+    if (pcb == NULL) return ERR_OK;
+    tcp_arg(pcb, NULL);
+    tcp_recv(pcb, NULL);
+    tcp_err(pcb, NULL);
+    tcp_poll(pcb, NULL, 0);
+    if (tcp_close(pcb) != ERR_OK) {
+        tcp_abort(pcb);
+        return ERR_ABRT;
+    }
+    return ERR_OK;
 }
 
 static err_t poll_client(void *arg, struct tcp_pcb *pcb) {
     (void) pcb;
     web_client_t *client = arg;
     if (client == NULL) return ERR_OK;
-    if (++client->idle_polls >= 5) {
-        close_client(client);
+    if (++client->age_polls >= 5) {
+        return close_client(client);
     }
     return ERR_OK;
 }
@@ -83,9 +85,9 @@ static void client_error(void *arg, err_t error) {
     if (client != NULL) memset(client, 0, sizeof(*client));
 }
 
-static void send_response(web_client_t *client, int status,
-                          const char *content_type, const char *body,
-                          size_t body_length) {
+static err_t send_response(web_client_t *client, int status,
+                           const char *content_type, const char *body,
+                           size_t body_length) {
     const char *reason = status == 200 ? "OK" :
                          status == 202 ? "Accepted" :
                          status == 400 ? "Bad Request" :
@@ -93,53 +95,48 @@ static void send_response(web_client_t *client, int status,
                          status == 405 ? "Method Not Allowed" :
                          status == 503 ? "Service Unavailable" : "Error";
     int header_length = snprintf(
-        client->response, sizeof(client->response),
+        client->response_header, sizeof(client->response_header),
         "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %u\r\n"
         "Cache-Control: no-store\r\nConnection: close\r\n\r\n",
         status, reason, content_type, (unsigned int) body_length);
-    if (header_length < 0 || (size_t) header_length + body_length >
-                                 sizeof(client->response)) {
-        close_client(client);
-        return;
+    if (header_length < 0 || (size_t) header_length >=
+                                 sizeof(client->response_header)) {
+        return close_client(client);
     }
-    memcpy(client->response + header_length, body, body_length);
-    size_t response_length = (size_t) header_length + body_length;
-    if (tcp_write(client->pcb, client->response, response_length,
-                  TCP_WRITE_FLAG_COPY) != ERR_OK) {
-        close_client(client);
-        return;
+    if (tcp_write(client->pcb, client->response_header, (size_t) header_length,
+                  TCP_WRITE_FLAG_COPY) != ERR_OK ||
+        tcp_write(client->pcb, body, body_length, TCP_WRITE_FLAG_COPY) != ERR_OK) {
+        return close_client(client);
     }
     tcp_output(client->pcb);
-    close_client(client);
+    return close_client(client);
 }
 
-static void respond_json(web_client_t *client, int status, const char *json) {
-    send_response(client, status, "application/json; charset=utf-8", json,
-                  strlen(json));
+static err_t respond_json(web_client_t *client, int status, const char *json) {
+    return send_response(client, status, "application/json; charset=utf-8",
+                         json, strlen(json));
 }
 
-static void handle_request(web_client_t *client) {
+static err_t handle_request(web_client_t *client) {
     char method[8] = {0};
     char target[128] = {0};
     if (sscanf(client->request, "%7s %127s", method, target) != 2) {
-        respond_json(client, 400, "{\"error\":\"invalid request\"}");
-        return;
+        return respond_json(client, 400, "{\"error\":\"invalid request\"}");
     }
     if (strcmp(method, "GET") == 0 && strcmp(target, "/api/status") == 0) {
         bluetooth_control_get_snapshot(&status_snapshot);
         size_t length = 0;
         if (!control_json_write_snapshot(&status_snapshot, status_json,
                                          sizeof(status_json), &length)) {
-            respond_json(client, 503, "{\"error\":\"status too large\"}");
-            return;
+            return respond_json(client, 503,
+                                "{\"error\":\"status too large\"}");
         }
-        send_response(client, 200, "application/json; charset=utf-8", status_json,
-                      length);
-        return;
+        return send_response(client, 200, "application/json; charset=utf-8",
+                             status_json, length);
     }
     if (strcmp(method, "POST") != 0) {
-        respond_json(client, 405, "{\"error\":\"method not allowed\"}");
-        return;
+        return respond_json(client, 405,
+                            "{\"error\":\"method not allowed\"}");
     }
 
     bluetooth_control_request_t request = {0};
@@ -155,14 +152,14 @@ static void handle_request(web_client_t *client) {
     } else if (strcmp(target, "/api/forget") == 0) {
         request.action = BLUETOOTH_CONTROL_FORGET;
     } else {
-        respond_json(client, 404, "{\"error\":\"unknown endpoint\"}");
-        return;
+        return respond_json(client, 404,
+                            "{\"error\":\"unknown endpoint\"}");
     }
     if (!bluetooth_control_submit(&request)) {
-        respond_json(client, 503, "{\"error\":\"control queue full\"}");
-        return;
+        return respond_json(client, 503,
+                            "{\"error\":\"control queue full\"}");
     }
-    respond_json(client, 202, "{\"accepted\":true}");
+    return respond_json(client, 202, "{\"accepted\":true}");
 }
 
 static err_t receive_request(void *arg, struct tcp_pcb *pcb, struct pbuf *p,
@@ -171,11 +168,9 @@ static err_t receive_request(void *arg, struct tcp_pcb *pcb, struct pbuf *p,
     web_client_t *client = arg;
     if (p == NULL || error != ERR_OK) {
         if (p != NULL) pbuf_free(p);
-        close_client(client);
-        return ERR_OK;
+        return close_client(client);
     }
     tcp_recved(client->pcb, p->tot_len);
-    client->idle_polls = 0;
     size_t available = sizeof(client->request) - 1 - client->request_length;
     size_t copied = pbuf_copy_partial(p, client->request + client->request_length,
                                       available, 0);
@@ -183,9 +178,10 @@ static err_t receive_request(void *arg, struct tcp_pcb *pcb, struct pbuf *p,
     client->request[client->request_length] = '\0';
     pbuf_free(p);
     if (strstr(client->request, "\r\n\r\n") != NULL) {
-        handle_request(client);
+        return handle_request(client);
     } else if (available == copied) {
-        respond_json(client, 400, "{\"error\":\"request too large\"}");
+        return respond_json(client, 400,
+                            "{\"error\":\"request too large\"}");
     }
     return ERR_OK;
 }
