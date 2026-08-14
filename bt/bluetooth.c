@@ -16,6 +16,7 @@
 #include "hid_boot_report.h"
 #include "hid_channels.h"
 #include "hid_keyboard.h"
+#include "firmware_version.h"
 #include "sdp_parser.h"
 #include "pico/btstack_cyw43.h"
 #include "pico/cyw43_arch.h"
@@ -1057,6 +1058,8 @@ void bluetooth_control_get_snapshot(bluetooth_control_snapshot_t *snapshot) {
         return;
     }
     memset(snapshot, 0, sizeof(*snapshot));
+    strncpy(snapshot->version, PICO_KEYBOARD_VERSION,
+            sizeof(snapshot->version) - 1);
     const char *state = bt_state_name(current_state);
     strncpy(snapshot->state, state, sizeof(snapshot->state) - 1);
     snapshot->auto_connect = auto_connect_enabled;
@@ -1182,8 +1185,9 @@ void bluetooth_task(void) {
 
     if (stack_working && !startup_logged && usb_serial_connected()) {
         startup_logged = true;
-        usb_serial_printf("[BT] Stack started; adapter address %s\r\n",
-                          bd_addr_to_str(local_address));
+        usb_serial_printf(
+            "[BT] Stack started; firmware=%s adapter address %s\r\n",
+            PICO_KEYBOARD_VERSION, bd_addr_to_str(local_address));
 
     }
 }

@@ -1,0 +1,43 @@
+name: Release UF2
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Arm toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
+
+      - name: Checkout Pico SDK 2.3.0
+        run: git clone --branch 2.3.0 --depth 1 --recurse-submodules --shallow-submodules https://github.com/raspberrypi/pico-sdk.git "$RUNNER_TEMP/pico-sdk"
+
+      - name: Build host tests
+        run: |
+          cmake -S tests -B build-host-tests
+          cmake --build build-host-tests --parallel
+          ctest --test-dir build-host-tests --output-on-failure
+
+      - name: Build firmware
+        run: |
+          cmake -S . -B build -DPICO_SDK_PATH="$RUNNER_TEMP/pico-sdk" -DPICO_BOARD=pico_w -DPICO_KEYBOARD_VERSION="${GITHUB_REF_NAME}"
+          cmake --build build --parallel
+
+      - name: Name release artifact
+        run: cp build/pico_bt_keyboard.uf2 "pico-bt-keyboard-${GITHUB_REF_NAME}.uf2"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          files: pico-bt-keyboard-${{ github.ref_name }}.uf2
