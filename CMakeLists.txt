@@ -35,6 +35,7 @@ add_executable(pico_bt_keyboard
     web/control_json.c
     web/dhcp_server.c
     web/web_config.c
+    web/web_ui.c
 )
 
 if (PICO_KEYBOARD_DEMO)

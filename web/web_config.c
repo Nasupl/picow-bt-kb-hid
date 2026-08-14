@@ -10,6 +10,7 @@
 #include "lwip/tcp.h"
 #include "pico/cyw43_arch.h"
 #include "usb_serial.h"
+#include "web_ui.h"
 
 #define WEB_AP_SSID "PicoW-Keyboard-Setup"
 #define WEB_AP_PASSWORD "pico-keyboard"
@@ -133,6 +134,11 @@ static err_t handle_request(web_client_t *client) {
         }
         return send_response(client, 200, "application/json; charset=utf-8",
                              status_json, length);
+    }
+    if (strcmp(method, "GET") == 0 &&
+        (strcmp(target, "/") == 0 || strcmp(target, "/index.html") == 0)) {
+        return send_response(client, 200, "text/html; charset=utf-8",
+                             web_ui_html, web_ui_html_length);
     }
     if (strcmp(method, "POST") != 0) {
         return respond_json(client, 405,
