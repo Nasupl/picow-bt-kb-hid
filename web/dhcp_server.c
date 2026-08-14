@@ -10,6 +10,7 @@
 #include "lwip/def.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/pbuf.h"
+#include "pico/time.h"
 #include "usb_serial.h"
 
 #define DHCP_SERVER_PORT 67
@@ -32,6 +33,8 @@
 #define DHCP_MAGIC_COOKIE 0x63825363u
 #define DHCP_FIXED_SIZE 240
 #define DHCP_MIN_RESPONSE_SIZE 300
+#define DHCP_OFFER_HOLD_MS 60000u
+#define DHCP_LEASE_TIME_SECONDS 86400u
 
 typedef struct __attribute__((packed)) {
     uint8_t op;
@@ -78,14 +81,26 @@ static void write_option(uint8_t **cursor, uint8_t option,
 
 static int find_lease(dhcp_server_t *server, const uint8_t mac[6]) {
     int free_lease = -1;
+    int oldest_lease = 0;
+    uint32_t now = (uint32_t) to_ms_since_boot(get_absolute_time());
     for (int i = 0; i < DHCP_SERVER_MAX_LEASES; ++i) {
         if (memcmp(server->leases[i].mac, mac, 6) == 0) return i;
         static const uint8_t empty[6] = {0};
-        if (free_lease < 0 && memcmp(server->leases[i].mac, empty, 6) == 0) {
+        bool unused = memcmp(server->leases[i].mac, empty, 6) == 0;
+        bool expired = !unused &&
+            (int32_t) (server->leases[i].expiry_ms - now) <= 0;
+        if (free_lease < 0 && (unused || expired)) {
             free_lease = i;
         }
+        if ((int32_t) (server->leases[i].expiry_ms -
+                       server->leases[oldest_lease].expiry_ms) < 0) {
+            oldest_lease = i;
+        }
     }
-    return free_lease;
+    // If all leases are active, recycle the one that expires first. This
+    // prevents randomized client MAC addresses from exhausting the AP until
+    // the next reboot.
+    return free_lease >= 0 ? free_lease : oldest_lease;
 }
 
 static void receive_dhcp(void *arg, struct udp_pcb *pcb, struct pbuf *p,
@@ -117,6 +132,9 @@ static void receive_dhcp(void *arg, struct udp_pcb *pcb, struct pbuf *p,
         // Reserve the offered slot so a following request from this client
         // resolves to the same address even if another discovery arrives.
         memcpy(server->leases[lease].mac, message.chaddr, 6);
+        server->leases[lease].expiry_ms =
+            (uint32_t) to_ms_since_boot(get_absolute_time()) +
+            DHCP_OFFER_HOLD_MS;
         usb_serial_printf(
             "[WEB] DHCP DISCOVER mac=%02x:%02x:%02x:%02x:%02x:%02x offer=192.168.4.%u\r\n",
             message.chaddr[0], message.chaddr[1], message.chaddr[2],
@@ -128,6 +146,9 @@ static void receive_dhcp(void *arg, struct udp_pcb *pcb, struct pbuf *p,
         if (requested != NULL && requested[1] == 4 &&
             requested[5] != DHCP_LEASE_BASE + lease) return;
         memcpy(server->leases[lease].mac, message.chaddr, 6);
+        server->leases[lease].expiry_ms =
+            (uint32_t) to_ms_since_boot(get_absolute_time()) +
+            DHCP_LEASE_TIME_SECONDS * 1000u;
         reply_type = DHCP_ACK;
         usb_serial_printf(
             "[WEB] DHCP REQUEST mac=%02x:%02x:%02x:%02x:%02x:%02x ack=192.168.4.%u\r\n",
@@ -152,7 +173,7 @@ static void receive_dhcp(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     write_option(&cursor, DHCP_OPTION_SUBNET, &netmask->addr, 4);
     write_option(&cursor, DHCP_OPTION_ROUTER, &server_ip->addr, 4);
     write_option(&cursor, DHCP_OPTION_DNS, &server_ip->addr, 4);
-    uint32_t lease_time = lwip_htonl(86400);
+    uint32_t lease_time = lwip_htonl(DHCP_LEASE_TIME_SECONDS);
     write_option(&cursor, DHCP_OPTION_LEASE_TIME, &lease_time, 4);
     *cursor++ = DHCP_OPTION_END;
 

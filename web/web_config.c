@@ -21,6 +21,7 @@ typedef struct {
     bool used;
     struct tcp_pcb *pcb;
     size_t request_length;
+    uint8_t idle_polls;
     char request[WEB_REQUEST_SIZE];
     char response[WEB_RESPONSE_SIZE];
 } web_client_t;
@@ -28,6 +29,10 @@ typedef struct {
 static web_client_t clients[WEB_MAX_CLIENTS];
 static struct tcp_pcb *listener;
 static dhcp_server_t dhcp_server;
+// The RP2040 default main stack is only 2 KiB. Keep the status working set in
+// BSS rather than placing more than 4 KiB in handle_request's stack frame.
+static bluetooth_control_snapshot_t status_snapshot;
+static char status_json[3072];
 
 static int hex_value(char ch) {
     if (ch >= '0' && ch <= '9') return ch - '0';
@@ -53,11 +58,22 @@ static void close_client(web_client_t *client) {
         tcp_arg(client->pcb, NULL);
         tcp_recv(client->pcb, NULL);
         tcp_err(client->pcb, NULL);
+        tcp_poll(client->pcb, NULL, 0);
         if (tcp_close(client->pcb) != ERR_OK) {
             tcp_abort(client->pcb);
         }
     }
     memset(client, 0, sizeof(*client));
+}
+
+static err_t poll_client(void *arg, struct tcp_pcb *pcb) {
+    (void) pcb;
+    web_client_t *client = arg;
+    if (client == NULL) return ERR_OK;
+    if (++client->idle_polls >= 5) {
+        close_client(client);
+    }
+    return ERR_OK;
 }
 
 static void client_error(void *arg, err_t error) {
@@ -109,15 +125,14 @@ static void handle_request(web_client_t *client) {
         return;
     }
     if (strcmp(method, "GET") == 0 && strcmp(target, "/api/status") == 0) {
-        bluetooth_control_snapshot_t snapshot;
-        bluetooth_control_get_snapshot(&snapshot);
-        char json[3072];
+        bluetooth_control_get_snapshot(&status_snapshot);
         size_t length = 0;
-        if (!control_json_write_snapshot(&snapshot, json, sizeof(json), &length)) {
+        if (!control_json_write_snapshot(&status_snapshot, status_json,
+                                         sizeof(status_json), &length)) {
             respond_json(client, 503, "{\"error\":\"status too large\"}");
             return;
         }
-        send_response(client, 200, "application/json; charset=utf-8", json,
+        send_response(client, 200, "application/json; charset=utf-8", status_json,
                       length);
         return;
     }
@@ -159,6 +174,7 @@ static err_t receive_request(void *arg, struct tcp_pcb *pcb, struct pbuf *p,
         return ERR_OK;
     }
     tcp_recved(client->pcb, p->tot_len);
+    client->idle_polls = 0;
     size_t available = sizeof(client->request) - 1 - client->request_length;
     size_t copied = pbuf_copy_partial(p, client->request + client->request_length,
                                       available, 0);
@@ -183,6 +199,9 @@ static err_t accept_client(void *arg, struct tcp_pcb *pcb, err_t error) {
             tcp_arg(pcb, &clients[i]);
             tcp_recv(pcb, receive_request);
             tcp_err(pcb, client_error);
+            // tcp_poll runs every ~1 second with interval 2. Reclaim clients
+            // that do not complete an HTTP header within about 5 seconds.
+            tcp_poll(pcb, poll_client, 2);
             return ERR_OK;
         }
     }

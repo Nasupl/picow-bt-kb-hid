@@ -11,6 +11,7 @@
 
 typedef struct {
     uint8_t mac[6];
+    uint32_t expiry_ms;
 } dhcp_lease_t;
 
 typedef struct {
