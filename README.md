@@ -139,7 +139,8 @@ The Bluetooth module operates as a finite state machine to manage scan intervals
 stateDiagram-v2
     [*] --> Initializing
     Initializing --> Idle : BTstack Working
-    Idle --> Inquiry : Saved keyboard / Retry timer expired
+    Idle --> Connecting : Saved keyboard / Retry timer expired
+    Idle --> Inquiry : Manual scan / Reconnect without saved target
     Inquiry --> Idle : Inquiry Complete (No HID peripheral found)
     Inquiry --> Connecting : Inquiry Complete (HID peripheral found)
     Connecting --> Connected : ACL Link Established
@@ -157,7 +158,7 @@ stateDiagram-v2
 ```
 
 - **`Initializing`**: BTstack is powering up and registering packet handlers.
-- **`Idle`**: The stack is ready. With automatic reconnection enabled and a saved keyboard present, it waits 5 seconds (via an asynchronous timer) between Inquiry scans.
+- **`Idle`**: The stack is ready. With automatic reconnection enabled and a saved keyboard present, it retries a direct ACL connection every 5 seconds. Direct paging works even when a paired keyboard is no longer discoverable.
 - **`Inquiry`**: Performs a 5-second Bluetooth Classic Inquiry scan. No scan is started or scheduled while connected or connecting.
 - **`Connecting`**: Initiates a Classic ACL connection to the target device.
 - **`Connected`**: An ACL link is active.
