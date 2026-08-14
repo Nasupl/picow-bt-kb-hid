@@ -154,6 +154,7 @@ static void test_bluetooth_state_machine(void) {
     for (size_t i = 1; i < sizeof(happy_path) / sizeof(happy_path[0]); ++i) {
         assert(bt_state_transition_allowed(happy_path[i - 1], happy_path[i]));
     }
+    assert(bt_state_transition_allowed(STATE_IDLE, STATE_CONNECTING));
     assert(bt_state_transition_allowed(STATE_CONNECTING, STATE_IDLE));
     assert(bt_state_transition_allowed(STATE_HID_CONNECTED, STATE_DISCONNECTED));
     assert(!bt_state_transition_allowed(STATE_IDLE, STATE_HID_CONNECTED));

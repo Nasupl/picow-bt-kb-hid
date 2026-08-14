@@ -191,6 +191,14 @@ static bool begin_connection(bd_addr_t address) {
         bool created;
         Device *saved = device_manager_upsert(
             &device_manager, address, false, 0, 0x0540, NULL, 0, &created);
+        if (saved == NULL) {
+            usb_serial_printf(
+                "[BT] Clearing discovery list to restore saved keyboard\r\n");
+            device_manager_init(&device_manager);
+            saved = device_manager_upsert(
+                &device_manager, address, false, 0, 0x0540, NULL, 0,
+                &created);
+        }
         if (saved != NULL) {
             link_key_t link_key;
             link_key_type_t link_key_type;
