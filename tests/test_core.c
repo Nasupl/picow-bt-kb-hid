@@ -7,6 +7,7 @@
 #include "device_manager.h"
 #include "bt_state.h"
 #include "control_command.h"
+#include "control_request_queue.h"
 #include "hid_boot_report.h"
 #include "hid_channels.h"
 #include "sdp_parser.h"
@@ -260,6 +261,34 @@ static void test_control_commands(void) {
     assert(strstr(control_command_help(), "connect") != NULL);
 }
 
+static void test_control_request_queue(void) {
+    control_request_queue_t queue;
+    control_request_queue_init(&queue);
+    bluetooth_control_request_t request = {
+        .action = BLUETOOTH_CONTROL_SCAN,
+    };
+    bluetooth_control_request_t output;
+
+    assert(!control_request_queue_pop(&queue, &output));
+    for (size_t i = 0; i < CONTROL_REQUEST_QUEUE_CAPACITY; ++i) {
+        request.action = (bluetooth_control_action_t) i;
+        request.address[0] = (uint8_t) i;
+        assert(control_request_queue_push(&queue, &request));
+    }
+    assert(!control_request_queue_push(&queue, &request));
+    for (size_t i = 0; i < CONTROL_REQUEST_QUEUE_CAPACITY; ++i) {
+        assert(control_request_queue_pop(&queue, &output));
+        assert(output.action == (bluetooth_control_action_t) i);
+        assert(output.address[0] == i);
+    }
+
+    // Exercise wrap-around after the head has advanced.
+    request.action = BLUETOOTH_CONTROL_RECONNECT;
+    assert(control_request_queue_push(&queue, &request));
+    assert(control_request_queue_pop(&queue, &output));
+    assert(output.action == BLUETOOTH_CONTROL_RECONNECT);
+}
+
 int main(void) {
     test_boot_reports();
     test_device_manager();
@@ -268,6 +297,7 @@ int main(void) {
     test_hid_channel_state();
     test_sdp_parser();
     test_control_commands();
+    test_control_request_queue();
     puts("core host tests: PASS");
     return 0;
 }
