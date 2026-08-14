@@ -294,6 +294,8 @@ static void test_control_snapshot_json(void) {
     bluetooth_control_snapshot_t snapshot = {0};
     strcpy(snapshot.state, "HIDConnected");
     snapshot.auto_connect = true;
+    snapshot.has_pairing_pin = true;
+    strcpy(snapshot.pairing_pin, "0000");
     snapshot.has_selected_device = true;
     const uint8_t address[] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xab};
     memcpy(snapshot.selected_device, address, sizeof(address));
@@ -311,6 +313,7 @@ static void test_control_snapshot_json(void) {
     assert(control_json_write_snapshot(&snapshot, json, sizeof(json), &written));
     assert(written == strlen(json));
     assert(strstr(json, "\"state\":\"HIDConnected\"") != NULL);
+    assert(strstr(json, "\"pairingPin\":\"0000\"") != NULL);
     assert(strstr(json, "\"selectedDevice\":\"01:23:45:67:89:AB\"") != NULL);
     assert(strstr(json, "Key\\\"board\\\\test\\u000a") != NULL);
     assert(strstr(json, "\"rssi\":-42") != NULL);
@@ -321,6 +324,10 @@ static void test_control_snapshot_json(void) {
                                         sizeof(too_small), NULL));
     assert(too_small[sizeof(too_small) - 1] == '\0');
     assert(!control_json_write_snapshot(NULL, json, sizeof(json), NULL));
+
+    snapshot.has_pairing_pin = false;
+    assert(control_json_write_snapshot(&snapshot, json, sizeof(json), NULL));
+    assert(strstr(json, "\"pairingPin\":null") != NULL);
 
     bluetooth_control_snapshot_t worst_case = {0};
     memset(worst_case.state, 1, sizeof(worst_case.state) - 1);

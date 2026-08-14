@@ -64,8 +64,14 @@ bool control_json_write_snapshot(const bluetooth_control_snapshot_t *snapshot,
 
     append_format(&writer, "{\"state\":");
     append_json_string(&writer, snapshot->state);
-    append_format(&writer, ",\"autoConnect\":%s,\"selectedDevice\":",
+    append_format(&writer, ",\"autoConnect\":%s,\"pairingPin\":",
                   snapshot->auto_connect ? "true" : "false");
+    if (snapshot->has_pairing_pin) {
+        append_json_string(&writer, snapshot->pairing_pin);
+    } else {
+        append_format(&writer, "null");
+    }
+    append_format(&writer, ",\"selectedDevice\":");
     if (snapshot->has_selected_device) {
         append_address(&writer, snapshot->selected_device);
     } else {
