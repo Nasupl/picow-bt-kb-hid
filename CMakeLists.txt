@@ -17,6 +17,27 @@ project(pico_bt_keyboard C CXX ASM)
 
 pico_sdk_init()
 
+set(PICO_KEYBOARD_VERSION "" CACHE STRING "Firmware version override")
+if (NOT PICO_KEYBOARD_VERSION)
+    execute_process(
+        COMMAND git describe --tags --always --dirty
+        WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
+        OUTPUT_VARIABLE PICO_KEYBOARD_VERSION
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+endif()
+if (NOT PICO_KEYBOARD_VERSION)
+    set(PICO_KEYBOARD_VERSION "development")
+endif()
+string(REGEX REPLACE "[^A-Za-z0-9._+-]" "_" PICO_KEYBOARD_VERSION
+       "${PICO_KEYBOARD_VERSION}")
+configure_file(
+    ${CMAKE_CURRENT_LIST_DIR}/include/firmware_version.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/firmware_version.h
+    @ONLY
+)
+
 option(PICO_KEYBOARD_DEMO "Type a fixed USB keyboard demo after enumeration" OFF)
 
 add_executable(pico_bt_keyboard
@@ -44,6 +65,7 @@ if (PICO_KEYBOARD_DEMO)
 endif()
 
 target_include_directories(pico_bt_keyboard PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
     ${CMAKE_CURRENT_LIST_DIR}/include
     ${CMAKE_CURRENT_LIST_DIR}/bt
     ${CMAKE_CURRENT_LIST_DIR}/web
@@ -72,3 +94,4 @@ pico_enable_stdio_usb(pico_bt_keyboard 0)
 pico_enable_stdio_uart(pico_bt_keyboard 0)
 
 pico_add_extra_outputs(pico_bt_keyboard)
+pico_set_program_version(pico_bt_keyboard "${PICO_KEYBOARD_VERSION}")

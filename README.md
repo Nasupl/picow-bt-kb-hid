@@ -15,6 +15,23 @@ cmake --build build
 
 The resulting firmware is `build/pico_bt_keyboard.uf2`.
 
+The firmware version defaults to `git describe --tags --always --dirty`. It can
+be fixed for reproducible packaging with `-DPICO_KEYBOARD_VERSION=v1.0.0`. The
+value appears in the CDC startup line, `GET /api/status`, and the browser UI.
+
+## Install a release
+
+1. Download `pico-bt-keyboard-vX.Y.Z.uf2` from the matching GitHub Release.
+2. Hold **BOOTSEL** while connecting the Pico W over USB.
+3. Copy the UF2 to the `RPI-RP2` drive and wait for the board to restart.
+4. Join `PicoW-Keyboard-Setup` using password `pico-keyboard`, then open
+   `http://192.168.4.1/`.
+5. Select **Scan**, choose the keyboard, and follow the PIN prompt if shown.
+
+Maintainers create a release by pushing a `v*` tag. The release workflow uses
+Pico SDK 2.3.0, runs host tests, embeds the tag as the version, and attaches the
+UF2 to an automatically generated GitHub Release.
+
 ## Hardware smoke test
 
 On a Linux USB host, `tools/smoke_test.py` records the CDC log and USB keyboard
@@ -208,6 +225,16 @@ If a saved Classic link key is rejected and the controller requests a PIN
 again, the stale key is deleted before pairing. A newly generated key is
 explicitly written to the TLV database and read back immediately; the CDC log
 reports `Link key persisted ... verified=1` without exposing key material.
+
+### Known limitations
+
+- Only Bluetooth Classic HID Boot Protocol keyboards are supported.
+- Generic Report Protocol, NKRO, media keys, and vendor-specific reports are
+  not yet converted.
+- The configuration AP uses a fixed SSID and password and remains enabled while
+  the adapter is running.
+- LED forwarding is implemented, but hardware behavior depends on the keyboard
+  and remains tracked separately.
 
 ### Remaining Segmentation
 

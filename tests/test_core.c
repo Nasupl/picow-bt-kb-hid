@@ -293,6 +293,7 @@ static void test_control_request_queue(void) {
 
 static void test_control_snapshot_json(void) {
     bluetooth_control_snapshot_t snapshot = {0};
+    strcpy(snapshot.version, "v1.2.3");
     strcpy(snapshot.state, "HIDConnected");
     snapshot.auto_connect = true;
     snapshot.has_pairing_pin = true;
@@ -314,6 +315,7 @@ static void test_control_snapshot_json(void) {
     assert(control_json_write_snapshot(&snapshot, json, sizeof(json), &written));
     assert(written == strlen(json));
     assert(strstr(json, "\"state\":\"HIDConnected\"") != NULL);
+    assert(strstr(json, "\"version\":\"v1.2.3\"") != NULL);
     assert(strstr(json, "\"pairingPin\":\"0000\"") != NULL);
     assert(strstr(json, "\"selectedDevice\":\"01:23:45:67:89:AB\"") != NULL);
     assert(strstr(json, "Key\\\"board\\\\test\\u000a") != NULL);

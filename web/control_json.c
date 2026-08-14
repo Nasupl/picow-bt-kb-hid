@@ -62,7 +62,9 @@ bool control_json_write_snapshot(const bluetooth_control_snapshot_t *snapshot,
     };
     buffer[0] = '\0';
 
-    append_format(&writer, "{\"state\":");
+    append_format(&writer, "{\"version\":");
+    append_json_string(&writer, snapshot->version);
+    append_format(&writer, ",\"state\":");
     append_json_string(&writer, snapshot->state);
     append_format(&writer, ",\"autoConnect\":%s,\"pairingPin\":",
                   snapshot->auto_connect ? "true" : "false");
