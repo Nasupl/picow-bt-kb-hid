@@ -50,6 +50,9 @@ static SdpParser sdp_parser;
 static bd_addr_t selected_device_addr;
 static bool selected_device_valid;
 static bool auto_connect_enabled = true;
+static bool pairing_pin_pending;
+static btstack_timer_source_t pairing_pin_timer;
+static bool pairing_pin_timer_armed;
 static control_request_queue_t control_requests;
 
 #define SELECTED_DEVICE_TAG                                                \
@@ -89,7 +92,33 @@ static void delete_selected_device(void) {
     }
 }
 
+static void clear_pairing_pin(void) {
+    pairing_pin_pending = false;
+    if (pairing_pin_timer_armed) {
+        btstack_run_loop_remove_timer(&pairing_pin_timer);
+        pairing_pin_timer_armed = false;
+    }
+}
+
+static void pairing_pin_timeout(btstack_timer_source_t *timer) {
+    (void) timer;
+    pairing_pin_timer_armed = false;
+    pairing_pin_pending = false;
+    usb_serial_printf("[BT] Pairing PIN display expired\r\n");
+}
+
+static void show_pairing_pin(void) {
+    clear_pairing_pin();
+    pairing_pin_pending = true;
+    btstack_run_loop_set_timer_handler(&pairing_pin_timer,
+                                       pairing_pin_timeout);
+    btstack_run_loop_set_timer(&pairing_pin_timer, 30000);
+    btstack_run_loop_add_timer(&pairing_pin_timer);
+    pairing_pin_timer_armed = true;
+}
+
 static void transition_to_state(bt_state_t new_state) {
+    if (new_state != STATE_AUTHENTICATING) clear_pairing_pin();
     if (current_state != new_state) {
         if (!bt_state_transition_allowed(current_state, new_state)) {
             usb_serial_printf("[BT] Unexpected state transition %s -> %s\r\n",
@@ -754,6 +783,7 @@ static void hci_event_handler(uint8_t packet_type, uint16_t channel,
             }
 
             usb_serial_printf("[BT] Type PIN 0000 on keyboard, then press Enter\r\n");
+            show_pairing_pin();
 
             hci_send_cmd(&hci_pin_code_request_reply, addr, 4, "0000");
 
@@ -954,6 +984,11 @@ void bluetooth_control_get_snapshot(bluetooth_control_snapshot_t *snapshot) {
     const char *state = bt_state_name(current_state);
     strncpy(snapshot->state, state, sizeof(snapshot->state) - 1);
     snapshot->auto_connect = auto_connect_enabled;
+    snapshot->has_pairing_pin = pairing_pin_pending;
+    if (pairing_pin_pending) {
+        strncpy(snapshot->pairing_pin, "0000",
+                sizeof(snapshot->pairing_pin) - 1);
+    }
     snapshot->has_selected_device = selected_device_valid;
     if (selected_device_valid) {
         memcpy(snapshot->selected_device, selected_device_addr,

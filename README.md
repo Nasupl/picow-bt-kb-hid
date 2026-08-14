@@ -55,6 +55,10 @@ Action endpoints return HTTP `202` after the request is queued. Poll
 UI at `/` provides the same status, scan, connect, disconnect, reconnect, and
 forget operations without requiring a CDC terminal.
 
+During legacy PIN pairing, the UI displays `0000` for 30 seconds. Type those
+digits on the Bluetooth keyboard and press Enter. The prompt disappears when
+authentication finishes, fails, disconnects, or times out.
+
 ## Host tests
 
 Boot keyboard report validation, device selection, connection-state

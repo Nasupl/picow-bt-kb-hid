@@ -8,6 +8,7 @@
 #define BLUETOOTH_CONTROL_MAX_DEVICES 16
 #define BLUETOOTH_CONTROL_NAME_SIZE 64
 #define BLUETOOTH_CONTROL_STATE_SIZE 24
+#define BLUETOOTH_CONTROL_PIN_SIZE 7
 
 typedef enum {
     BLUETOOTH_CONTROL_HELP = 0,
@@ -37,6 +38,8 @@ typedef struct {
 typedef struct {
     char state[BLUETOOTH_CONTROL_STATE_SIZE];
     bool auto_connect;
+    bool has_pairing_pin;
+    char pairing_pin[BLUETOOTH_CONTROL_PIN_SIZE];
     bool has_selected_device;
     uint8_t selected_device[6];
     size_t device_count;
