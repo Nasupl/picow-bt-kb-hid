@@ -35,6 +35,7 @@
 #include "cyw43_config.h"
 #include "dhcp_server.h"
 #include "lwip/udp.h"
+#include "usb_serial.h"
 
 #define DHCPDISCOVER    (1)
 #define DHCPOFFER       (2)
@@ -213,6 +214,7 @@ static void dhcp_server_process(void *arg, struct udp_pcb *upcb, struct pbuf *p,
 
     switch (msgtype[2]) {
         case DHCPDISCOVER: {
+            d->discover_count++;
             int yi = DHCPS_MAX_IP;
             for (int i = 0; i < DHCPS_MAX_IP; ++i) {
                 if (memcmp(d->lease[i].mac, dhcp_msg.chaddr, MAC_LEN) == 0) {
@@ -240,10 +242,14 @@ static void dhcp_server_process(void *arg, struct udp_pcb *upcb, struct pbuf *p,
             }
             dhcp_msg.yiaddr[3] = DHCPS_BASE_IP + yi;
             opt_write_u8(&opt, DHCP_OPT_MSG_TYPE, DHCPOFFER);
+            usb_serial_printf("[WEB] DHCP DISCOVER offer=%u.%u.%u.%u\r\n",
+                              dhcp_msg.yiaddr[0], dhcp_msg.yiaddr[1],
+                              dhcp_msg.yiaddr[2], dhcp_msg.yiaddr[3]);
             break;
         }
 
         case DHCPREQUEST: {
+            d->request_count++;
             uint8_t *o = opt_find(opt, DHCP_OPT_REQUESTED_IP);
             if (o == NULL) {
                 // Should be NACK
@@ -287,7 +293,8 @@ static void dhcp_server_process(void *arg, struct udp_pcb *upcb, struct pbuf *p,
             }
 
             opt_write_u8(&opt, DHCP_OPT_MSG_TYPE, DHCPACK);
-            printf("DHCPS: client connected: MAC=%02x:%02x:%02x:%02x:%02x:%02x IP=%u.%u.%u.%u host=\"%s\"\n",
+            d->ack_count++;
+            usb_serial_printf("[WEB] DHCP ACK MAC=%02x:%02x:%02x:%02x:%02x:%02x IP=%u.%u.%u.%u host=\"%s\"\r\n",
                 dhcp_msg.chaddr[0], dhcp_msg.chaddr[1], dhcp_msg.chaddr[2], dhcp_msg.chaddr[3], dhcp_msg.chaddr[4], dhcp_msg.chaddr[5],
                 dhcp_msg.yiaddr[0], dhcp_msg.yiaddr[1], dhcp_msg.yiaddr[2], dhcp_msg.yiaddr[3],
                 hostname);

@@ -22,5 +22,6 @@ int main(void) {
     while (true) {
         hid_keyboard_task();
         bluetooth_task();
+        web_config_task();
     }
 }

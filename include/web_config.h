@@ -4,5 +4,6 @@
 #include <stdbool.h>
 
 bool web_config_init(void);
+void web_config_task(void);
 
 #endif

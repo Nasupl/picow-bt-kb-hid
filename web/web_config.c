@@ -33,6 +33,7 @@ static dhcp_server_t dhcp_server;
 // BSS rather than placing more than 4 KiB in handle_request's stack frame.
 static bluetooth_control_snapshot_t status_snapshot;
 static char status_json[3072];
+static bool cdc_was_connected;
 
 static int hex_value(char ch) {
     if (ch >= '0' && ch <= '9') return ch - '0';
@@ -232,4 +233,17 @@ bool web_config_init(void) {
     usb_serial_printf("[WEB] AP SSID=%s password=%s URL=http://192.168.4.1/\r\n",
                       WEB_AP_SSID, WEB_AP_PASSWORD);
     return true;
+}
+
+void web_config_task(void) {
+    bool connected = usb_serial_connected();
+    if (connected && !cdc_was_connected) {
+        usb_serial_printf(
+            "[WEB] AP SSID=%s URL=http://192.168.4.1/ "
+            "DHCP discovers=%lu requests=%lu acks=%lu\r\n",
+            WEB_AP_SSID, (unsigned long) dhcp_server.discover_count,
+            (unsigned long) dhcp_server.request_count,
+            (unsigned long) dhcp_server.ack_count);
+    }
+    cdc_was_connected = connected;
 }
