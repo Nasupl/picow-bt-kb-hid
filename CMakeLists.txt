@@ -32,6 +32,7 @@ add_executable(pico_bt_keyboard
     usb/hid_keyboard.c
     usb/usb_serial.c
     usb/usb_descriptors.c
+    web/control_json.c
 )
 
 if (PICO_KEYBOARD_DEMO)
@@ -42,6 +43,7 @@ endif()
 target_include_directories(pico_bt_keyboard PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/include
     ${CMAKE_CURRENT_LIST_DIR}/bt
+    ${CMAKE_CURRENT_LIST_DIR}/web
 )
 
 target_compile_options(pico_bt_keyboard PRIVATE -Wall -Wextra)

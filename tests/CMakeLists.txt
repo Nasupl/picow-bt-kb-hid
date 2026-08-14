@@ -12,10 +12,12 @@ add_executable(core_tests
     ../bt/hid_channels.c
     ../bt/sdp_parser.c
     ../bt/hid_boot_report.c
+    ../web/control_json.c
 )
 target_include_directories(core_tests PRIVATE
     ../bt
     ../include
+    ../web
     stubs
 )
 target_compile_options(core_tests PRIVATE -Wall -Wextra -Werror)

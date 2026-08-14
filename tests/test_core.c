@@ -8,6 +8,7 @@
 #include "bt_state.h"
 #include "control_command.h"
 #include "control_request_queue.h"
+#include "control_json.h"
 #include "hid_boot_report.h"
 #include "hid_channels.h"
 #include "sdp_parser.h"
@@ -289,6 +290,39 @@ static void test_control_request_queue(void) {
     assert(output.action == BLUETOOTH_CONTROL_RECONNECT);
 }
 
+static void test_control_snapshot_json(void) {
+    bluetooth_control_snapshot_t snapshot = {0};
+    strcpy(snapshot.state, "HIDConnected");
+    snapshot.auto_connect = true;
+    snapshot.has_selected_device = true;
+    const uint8_t address[] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xab};
+    memcpy(snapshot.selected_device, address, sizeof(address));
+    snapshot.device_count = 1;
+    memcpy(snapshot.devices[0].address, address, sizeof(address));
+    strcpy(snapshot.devices[0].name, "Key\"board\\test\n");
+    snapshot.devices[0].rssi = -42;
+    snapshot.devices[0].has_rssi = true;
+    snapshot.devices[0].keyboard = true;
+    snapshot.devices[0].bonded = true;
+    snapshot.devices[0].connected = true;
+
+    char json[768];
+    size_t written = 0;
+    assert(control_json_write_snapshot(&snapshot, json, sizeof(json), &written));
+    assert(written == strlen(json));
+    assert(strstr(json, "\"state\":\"HIDConnected\"") != NULL);
+    assert(strstr(json, "\"selectedDevice\":\"01:23:45:67:89:AB\"") != NULL);
+    assert(strstr(json, "Key\\\"board\\\\test\\u000a") != NULL);
+    assert(strstr(json, "\"rssi\":-42") != NULL);
+    assert(strstr(json, "\"connected\":true") != NULL);
+
+    char too_small[16];
+    assert(!control_json_write_snapshot(&snapshot, too_small,
+                                        sizeof(too_small), NULL));
+    assert(too_small[sizeof(too_small) - 1] == '\0');
+    assert(!control_json_write_snapshot(NULL, json, sizeof(json), NULL));
+}
+
 int main(void) {
     test_boot_reports();
     test_device_manager();
@@ -298,6 +332,7 @@ int main(void) {
     test_sdp_parser();
     test_control_commands();
     test_control_request_queue();
+    test_control_snapshot_json();
     puts("core host tests: PASS");
     return 0;
 }
