@@ -110,19 +110,30 @@ static void receive_dhcp(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     (void) port;
     dhcp_server_t *server = arg;
     dhcp_message_t message = {0};
+    usb_serial_printf("[WEB] DHCP RX bytes=%u\r\n",
+                      (unsigned int) p->tot_len);
     size_t received = pbuf_copy_partial(p, &message, sizeof(message), 0);
     if (received < DHCP_FIXED_SIZE + 3) {
+        usb_serial_printf("[WEB] DHCP rejected: packet too short\r\n");
         pbuf_free(p);
         return;
     }
     pbuf_free(p);
     if (message.op != DHCP_BOOTREQUEST ||
-        message.cookie != lwip_htonl(DHCP_MAGIC_COOKIE)) return;
+        message.cookie != lwip_htonl(DHCP_MAGIC_COOKIE)) {
+        usb_serial_printf(
+            "[WEB] DHCP rejected: op=%u cookie=0x%08lx\r\n",
+            (unsigned int) message.op, (unsigned long) message.cookie);
+        return;
+    }
 
     size_t options_length = received - offsetof(dhcp_message_t, options);
     const uint8_t *message_type = find_option(
         message.options, options_length, DHCP_OPTION_MESSAGE_TYPE);
-    if (message_type == NULL || message_type[1] != 1) return;
+    if (message_type == NULL || message_type[1] != 1) {
+        usb_serial_printf("[WEB] DHCP rejected: missing message type\r\n");
+        return;
+    }
 
     int lease = find_lease(server, message.chaddr);
     if (lease < 0) return;
