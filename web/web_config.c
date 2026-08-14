@@ -212,11 +212,12 @@ static err_t accept_client(void *arg, struct tcp_pcb *pcb, err_t error) {
 bool web_config_init(void) {
     cyw43_arch_enable_ap_mode(WEB_AP_SSID, WEB_AP_PASSWORD,
                               CYW43_AUTH_WPA2_AES_PSK);
-    if (!dhcp_server_init(&dhcp_server,
-                          &cyw43_state.netif[CYW43_ITF_AP])) {
-        usb_serial_printf("[WEB] DHCP server setup failed\r\n");
-        return false;
-    }
+    ip_addr_t gateway;
+    ip_addr_t netmask;
+    IP_ADDR4(&gateway, 192, 168, 4, 1);
+    IP_ADDR4(&netmask, 255, 255, 255, 0);
+    dhcp_server_init(&dhcp_server, &cyw43_state.netif[CYW43_ITF_AP],
+                     &gateway, &netmask);
     listener = tcp_new_ip_type(IPADDR_TYPE_V4);
     if (listener == NULL || tcp_bind(listener, IP_ANY_TYPE, 80) != ERR_OK) {
         usb_serial_printf("[WEB] HTTP listener setup failed\r\n");

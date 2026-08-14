@@ -1,231 +1,333 @@
 /*
- * Minimal DHCP server derived from the MicroPython DHCP server.
- * Copyright (c) 2018-2019 Damien P. George. MIT licensed.
+ * This file is part of the MicroPython project, http://micropython.org/
+ *
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2018-2019 Damien P. George
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
-#include "dhcp_server.h"
 
-#include <stddef.h>
+// For DHCP specs see:
+//  https://www.ietf.org/rfc/rfc2131.txt
+//  https://tools.ietf.org/html/rfc2132 -- DHCP Options and BOOTP Vendor Extensions
+
+#include <stdio.h>
 #include <string.h>
+#include <errno.h>
 
-#include "lwip/def.h"
-#include "lwip/ip4_addr.h"
-#include "lwip/pbuf.h"
-#include "pico/time.h"
-#include "usb_serial.h"
+#include "cyw43_config.h"
+#include "dhcp_server.h"
+#include "lwip/udp.h"
 
-#define DHCP_SERVER_PORT 67
-#define DHCP_CLIENT_PORT 68
-#define DHCP_BOOTREQUEST 1
-#define DHCP_BOOTREPLY 2
-#define DHCP_DISCOVER 1
-#define DHCP_OFFER 2
-#define DHCP_REQUEST 3
-#define DHCP_ACK 5
-#define DHCP_OPTION_SUBNET 1
-#define DHCP_OPTION_ROUTER 3
-#define DHCP_OPTION_DNS 6
-#define DHCP_OPTION_REQUESTED_IP 50
-#define DHCP_OPTION_LEASE_TIME 51
-#define DHCP_OPTION_MESSAGE_TYPE 53
-#define DHCP_OPTION_SERVER_ID 54
-#define DHCP_OPTION_END 255
-#define DHCP_LEASE_BASE 16
-#define DHCP_MAGIC_COOKIE 0x63825363u
-#define DHCP_FIXED_SIZE 240
-#define DHCP_MIN_RESPONSE_SIZE 300
-#define DHCP_OFFER_HOLD_MS 60000u
-#define DHCP_LEASE_TIME_SECONDS 86400u
+#define DHCPDISCOVER    (1)
+#define DHCPOFFER       (2)
+#define DHCPREQUEST     (3)
+#define DHCPDECLINE     (4)
+#define DHCPACK         (5)
+#define DHCPNACK        (6)
+#define DHCPRELEASE     (7)
+#define DHCPINFORM      (8)
 
-typedef struct __attribute__((packed)) {
-    uint8_t op;
-    uint8_t htype;
-    uint8_t hlen;
+#define DHCP_OPT_PAD                (0)
+#define DHCP_OPT_SUBNET_MASK        (1)
+#define DHCP_OPT_ROUTER             (3)
+#define DHCP_OPT_DNS                (6)
+#define DHCP_OPT_HOST_NAME          (12)
+#define DHCP_OPT_REQUESTED_IP       (50)
+#define DHCP_OPT_IP_LEASE_TIME      (51)
+#define DHCP_OPT_MSG_TYPE           (53)
+#define DHCP_OPT_SERVER_ID          (54)
+#define DHCP_OPT_PARAM_REQUEST_LIST (55)
+#define DHCP_OPT_MAX_MSG_SIZE       (57)
+#define DHCP_OPT_VENDOR_CLASS_ID    (60)
+#define DHCP_OPT_CLIENT_ID          (61)
+#define DHCP_OPT_END                (255)
+
+#define PORT_DHCP_SERVER (67)
+#define PORT_DHCP_CLIENT (68)
+
+#define DEFAULT_LEASE_TIME_S (24 * 60 * 60) // in seconds
+
+#define MAC_LEN (6)
+#define MAKE_IP4(a, b, c, d) ((a) << 24 | (b) << 16 | (c) << 8 | (d))
+
+typedef struct {
+    uint8_t op; // message opcode
+    uint8_t htype; // hardware address type
+    uint8_t hlen; // hardware address length
     uint8_t hops;
-    uint32_t xid;
-    uint16_t secs;
+    uint32_t xid; // transaction id, chosen by client
+    uint16_t secs; // client seconds elapsed
     uint16_t flags;
-    uint8_t ciaddr[4];
-    uint8_t yiaddr[4];
-    uint8_t siaddr[4];
-    uint8_t giaddr[4];
-    uint8_t chaddr[16];
-    uint8_t sname[64];
-    uint8_t file[128];
-    uint32_t cookie;
-    uint8_t options[312];
-} dhcp_message_t;
+    uint8_t ciaddr[4]; // client IP address
+    uint8_t yiaddr[4]; // your IP address
+    uint8_t siaddr[4]; // next server IP address
+    uint8_t giaddr[4]; // relay agent IP address
+    uint8_t chaddr[16]; // client hardware address
+    uint8_t sname[64]; // server host name
+    uint8_t file[128]; // boot file name
+    uint8_t options[312]; // optional parameters, variable, starts with magic
+} dhcp_msg_t;
 
-static const uint8_t *find_option(const uint8_t *options, size_t length,
-                                  uint8_t wanted) {
-    size_t offset = 0;
-    while (offset < length) {
-        uint8_t option = options[offset++];
-        if (option == DHCP_OPTION_END) break;
-        if (option == 0) continue;
-        if (offset >= length) break;
-        uint8_t option_length = options[offset++];
-        if (offset + option_length > length) break;
-        if (option == wanted) return &options[offset - 2];
-        offset += option_length;
+static int dhcp_socket_new_dgram(struct udp_pcb **udp, void *cb_data, udp_recv_fn cb_udp_recv) {
+    // family is AF_INET
+    // type is SOCK_DGRAM
+
+    *udp = udp_new();
+    if (*udp == NULL) {
+        return -ENOMEM;
+    }
+
+    // Register callback
+    udp_recv(*udp, cb_udp_recv, (void *)cb_data);
+
+    return 0; // success
+}
+
+static void dhcp_socket_free(struct udp_pcb **udp) {
+    if (*udp != NULL) {
+        udp_remove(*udp);
+        *udp = NULL;
+    }
+}
+
+static int dhcp_socket_bind(struct udp_pcb **udp, uint16_t port) {
+    // TODO convert lwIP errors to errno
+    return udp_bind(*udp, IP_ANY_TYPE, port);
+}
+
+static int dhcp_socket_sendto(struct udp_pcb **udp, struct netif *nif, const void *buf, size_t len, uint32_t ip, uint16_t port) {
+    if (len > 0xffff) {
+        len = 0xffff;
+    }
+
+    struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, len, PBUF_RAM);
+    if (p == NULL) {
+        return -ENOMEM;
+    }
+
+    memcpy(p->payload, buf, len);
+
+    ip_addr_t dest;
+    IP4_ADDR(ip_2_ip4(&dest), ip >> 24 & 0xff, ip >> 16 & 0xff, ip >> 8 & 0xff, ip & 0xff);
+    err_t err;
+    if (nif != NULL) {
+        err = udp_sendto_if(*udp, p, &dest, port, nif);
+    } else {
+        err = udp_sendto(*udp, p, &dest, port);
+    }
+
+    pbuf_free(p);
+
+    if (err != ERR_OK) {
+        return err;
+    }
+
+    return len;
+}
+
+static uint8_t *opt_find(uint8_t *opt, uint8_t cmd) {
+    for (int i = 0; i < 308 && opt[i] != DHCP_OPT_END;) {
+        if (opt[i] == cmd) {
+            return &opt[i];
+        }
+        i += 2 + opt[i + 1];
     }
     return NULL;
 }
 
-static void write_option(uint8_t **cursor, uint8_t option,
-                         const void *value, uint8_t length) {
-    *(*cursor)++ = option;
-    *(*cursor)++ = length;
-    memcpy(*cursor, value, length);
-    *cursor += length;
+static void opt_write_n(uint8_t **opt, uint8_t cmd, size_t n, const void *data) {
+    uint8_t *o = *opt;
+    *o++ = cmd;
+    *o++ = n;
+    memcpy(o, data, n);
+    *opt = o + n;
 }
 
-static int find_lease(dhcp_server_t *server, const uint8_t mac[6]) {
-    int free_lease = -1;
-    int oldest_lease = 0;
-    uint32_t now = (uint32_t) to_ms_since_boot(get_absolute_time());
-    for (int i = 0; i < DHCP_SERVER_MAX_LEASES; ++i) {
-        if (memcmp(server->leases[i].mac, mac, 6) == 0) return i;
-        static const uint8_t empty[6] = {0};
-        bool unused = memcmp(server->leases[i].mac, empty, 6) == 0;
-        bool expired = !unused &&
-            (int32_t) (server->leases[i].expiry_ms - now) <= 0;
-        if (free_lease < 0 && (unused || expired)) {
-            free_lease = i;
-        }
-        if ((int32_t) (server->leases[i].expiry_ms -
-                       server->leases[oldest_lease].expiry_ms) < 0) {
-            oldest_lease = i;
-        }
-    }
-    // If all leases are active, recycle the one that expires first. This
-    // prevents randomized client MAC addresses from exhausting the AP until
-    // the next reboot.
-    return free_lease >= 0 ? free_lease : oldest_lease;
+static void opt_write_u8(uint8_t **opt, uint8_t cmd, uint8_t val) {
+    uint8_t *o = *opt;
+    *o++ = cmd;
+    *o++ = 1;
+    *o++ = val;
+    *opt = o;
 }
 
-static void receive_dhcp(void *arg, struct udp_pcb *pcb, struct pbuf *p,
-                         const ip_addr_t *address, u16_t port) {
-    (void) pcb;
-    (void) address;
-    (void) port;
-    dhcp_server_t *server = arg;
-    dhcp_message_t message = {0};
-    usb_serial_printf("[WEB] DHCP RX bytes=%u\r\n",
-                      (unsigned int) p->tot_len);
-    size_t received = pbuf_copy_partial(p, &message, sizeof(message), 0);
-    if (received < DHCP_FIXED_SIZE + 3) {
-        usb_serial_printf("[WEB] DHCP rejected: packet too short\r\n");
-        pbuf_free(p);
-        return;
+static void opt_write_u32(uint8_t **opt, uint8_t cmd, uint32_t val) {
+    uint8_t *o = *opt;
+    *o++ = cmd;
+    *o++ = 4;
+    *o++ = val >> 24;
+    *o++ = val >> 16;
+    *o++ = val >> 8;
+    *o++ = val;
+    *opt = o;
+}
+
+static void dhcp_server_process(void *arg, struct udp_pcb *upcb, struct pbuf *p, const ip_addr_t *src_addr, u16_t src_port) {
+    dhcp_server_t *d = arg;
+    (void)upcb;
+    (void)src_addr;
+    (void)src_port;
+
+    // This is around 548 bytes
+    dhcp_msg_t dhcp_msg;
+
+    #define DHCP_MIN_SIZE (240 + 3)
+    if (p->tot_len < DHCP_MIN_SIZE) {
+        goto ignore_request;
     }
+
+    size_t len = pbuf_copy_partial(p, &dhcp_msg, sizeof(dhcp_msg), 0);
+    if (len < DHCP_MIN_SIZE) {
+        goto ignore_request;
+    }
+
+    dhcp_msg.op = DHCPOFFER;
+    memcpy(&dhcp_msg.yiaddr, &ip4_addr_get_u32(ip_2_ip4(&d->ip)), 4);
+
+    uint8_t *opt = (uint8_t *)&dhcp_msg.options;
+    opt += 4; // assume magic cookie: 99, 130, 83, 99
+
+    uint8_t *msgtype = opt_find(opt, DHCP_OPT_MSG_TYPE);
+    if (msgtype == NULL) {
+        // A DHCP package without MSG_TYPE?
+        goto ignore_request;
+    }
+
+    switch (msgtype[2]) {
+        case DHCPDISCOVER: {
+            int yi = DHCPS_MAX_IP;
+            for (int i = 0; i < DHCPS_MAX_IP; ++i) {
+                if (memcmp(d->lease[i].mac, dhcp_msg.chaddr, MAC_LEN) == 0) {
+                    // MAC match, use this IP address
+                    yi = i;
+                    break;
+                }
+                if (yi == DHCPS_MAX_IP) {
+                    // Look for a free IP address
+                    if (memcmp(d->lease[i].mac, "\x00\x00\x00\x00\x00\x00", MAC_LEN) == 0) {
+                        // IP available
+                        yi = i;
+                    }
+                    uint32_t expiry = d->lease[i].expiry << 16 | 0xffff;
+                    if ((int32_t)(expiry - cyw43_hal_ticks_ms()) < 0) {
+                        // IP expired, reuse it
+                        memset(d->lease[i].mac, 0, MAC_LEN);
+                        yi = i;
+                    }
+                }
+            }
+            if (yi == DHCPS_MAX_IP) {
+                // No more IP addresses left
+                goto ignore_request;
+            }
+            dhcp_msg.yiaddr[3] = DHCPS_BASE_IP + yi;
+            opt_write_u8(&opt, DHCP_OPT_MSG_TYPE, DHCPOFFER);
+            break;
+        }
+
+        case DHCPREQUEST: {
+            uint8_t *o = opt_find(opt, DHCP_OPT_REQUESTED_IP);
+            if (o == NULL) {
+                // Should be NACK
+                goto ignore_request;
+            }
+            if (memcmp(o + 2, &ip4_addr_get_u32(ip_2_ip4(&d->ip)), 3) != 0) {
+                // Should be NACK
+                goto ignore_request;
+            }
+            uint8_t yi = o[5] - DHCPS_BASE_IP;
+            if (yi >= DHCPS_MAX_IP) {
+                // Should be NACK
+                goto ignore_request;
+            }
+            if (memcmp(d->lease[yi].mac, dhcp_msg.chaddr, MAC_LEN) == 0) {
+                // MAC match, ok to use this IP address
+            } else if (memcmp(d->lease[yi].mac, "\x00\x00\x00\x00\x00\x00", MAC_LEN) == 0) {
+                // IP unused, ok to use this IP address
+                memcpy(d->lease[yi].mac, dhcp_msg.chaddr, MAC_LEN);
+            } else {
+                // IP already in use
+                // Should be NACK
+                goto ignore_request;
+            }
+            d->lease[yi].expiry = (cyw43_hal_ticks_ms() + DEFAULT_LEASE_TIME_S * 1000) >> 16;
+            dhcp_msg.yiaddr[3] = DHCPS_BASE_IP + yi;
+
+            // Read the client's host name (option 12, RFC 2132) from the
+            // *incoming* options BEFORE opt_write_* below reuses this buffer to
+            // build the reply. It is optional and client-controlled, so it can
+            // be absent (some phones omit it or send a randomised name).
+            char hostname[32] = "";
+            uint8_t *hn = opt_find(opt, DHCP_OPT_HOST_NAME);
+            if (hn != NULL) {
+                uint8_t hn_len = hn[1];
+                if (hn_len > sizeof(hostname) - 1) {
+                    hn_len = sizeof(hostname) - 1;
+                }
+                memcpy(hostname, hn + 2, hn_len);
+                hostname[hn_len] = '\0';
+            }
+
+            opt_write_u8(&opt, DHCP_OPT_MSG_TYPE, DHCPACK);
+            printf("DHCPS: client connected: MAC=%02x:%02x:%02x:%02x:%02x:%02x IP=%u.%u.%u.%u host=\"%s\"\n",
+                dhcp_msg.chaddr[0], dhcp_msg.chaddr[1], dhcp_msg.chaddr[2], dhcp_msg.chaddr[3], dhcp_msg.chaddr[4], dhcp_msg.chaddr[5],
+                dhcp_msg.yiaddr[0], dhcp_msg.yiaddr[1], dhcp_msg.yiaddr[2], dhcp_msg.yiaddr[3],
+                hostname);
+            break;
+        }
+
+        default:
+            goto ignore_request;
+    }
+
+    opt_write_n(&opt, DHCP_OPT_SERVER_ID, 4, &ip4_addr_get_u32(ip_2_ip4(&d->ip)));
+    opt_write_n(&opt, DHCP_OPT_SUBNET_MASK, 4, &ip4_addr_get_u32(ip_2_ip4(&d->nm)));
+    opt_write_n(&opt, DHCP_OPT_ROUTER, 4, &ip4_addr_get_u32(ip_2_ip4(&d->ip))); // aka gateway; can have multiple addresses
+    opt_write_n(&opt, DHCP_OPT_DNS, 4, &ip4_addr_get_u32(ip_2_ip4(&d->ip))); // this server is the dns
+    opt_write_u32(&opt, DHCP_OPT_IP_LEASE_TIME, DEFAULT_LEASE_TIME_S);
+    *opt++ = DHCP_OPT_END;
+    struct netif *nif = ip_current_input_netif();
+    dhcp_socket_sendto(&d->udp, nif, &dhcp_msg, opt - (uint8_t *)&dhcp_msg, 0xffffffff, PORT_DHCP_CLIENT);
+
+ignore_request:
     pbuf_free(p);
-    if (message.op != DHCP_BOOTREQUEST ||
-        message.cookie != lwip_htonl(DHCP_MAGIC_COOKIE)) {
-        usb_serial_printf(
-            "[WEB] DHCP rejected: op=%u cookie=0x%08lx\r\n",
-            (unsigned int) message.op, (unsigned long) message.cookie);
-        return;
-    }
-
-    size_t options_length = received - offsetof(dhcp_message_t, options);
-    const uint8_t *message_type = find_option(
-        message.options, options_length, DHCP_OPTION_MESSAGE_TYPE);
-    if (message_type == NULL || message_type[1] != 1) {
-        usb_serial_printf("[WEB] DHCP rejected: missing message type\r\n");
-        return;
-    }
-
-    int lease = find_lease(server, message.chaddr);
-    if (lease < 0) return;
-    uint8_t reply_type;
-    if (message_type[2] == DHCP_DISCOVER) {
-        reply_type = DHCP_OFFER;
-        // Reserve the offered slot so a following request from this client
-        // resolves to the same address even if another discovery arrives.
-        memcpy(server->leases[lease].mac, message.chaddr, 6);
-        server->leases[lease].expiry_ms =
-            (uint32_t) to_ms_since_boot(get_absolute_time()) +
-            DHCP_OFFER_HOLD_MS;
-        usb_serial_printf(
-            "[WEB] DHCP DISCOVER mac=%02x:%02x:%02x:%02x:%02x:%02x offer=192.168.4.%u\r\n",
-            message.chaddr[0], message.chaddr[1], message.chaddr[2],
-            message.chaddr[3], message.chaddr[4], message.chaddr[5],
-            (unsigned int) (DHCP_LEASE_BASE + lease));
-    } else if (message_type[2] == DHCP_REQUEST) {
-        const uint8_t *requested = find_option(
-            message.options, options_length, DHCP_OPTION_REQUESTED_IP);
-        if (requested != NULL && requested[1] == 4 &&
-            requested[5] != DHCP_LEASE_BASE + lease) return;
-        memcpy(server->leases[lease].mac, message.chaddr, 6);
-        server->leases[lease].expiry_ms =
-            (uint32_t) to_ms_since_boot(get_absolute_time()) +
-            DHCP_LEASE_TIME_SECONDS * 1000u;
-        reply_type = DHCP_ACK;
-        usb_serial_printf(
-            "[WEB] DHCP REQUEST mac=%02x:%02x:%02x:%02x:%02x:%02x ack=192.168.4.%u\r\n",
-            message.chaddr[0], message.chaddr[1], message.chaddr[2],
-            message.chaddr[3], message.chaddr[4], message.chaddr[5],
-            (unsigned int) (DHCP_LEASE_BASE + lease));
-    } else {
-        return;
-    }
-
-    const ip4_addr_t *server_ip = netif_ip4_addr(server->netif);
-    const ip4_addr_t *netmask = netif_ip4_netmask(server->netif);
-    memcpy(message.yiaddr, &server_ip->addr, 4);
-    message.yiaddr[3] = (uint8_t) (DHCP_LEASE_BASE + lease);
-    memcpy(message.siaddr, &server_ip->addr, 4);
-    message.op = DHCP_BOOTREPLY;
-    message.cookie = lwip_htonl(DHCP_MAGIC_COOKIE);
-
-    uint8_t *cursor = message.options;
-    write_option(&cursor, DHCP_OPTION_MESSAGE_TYPE, &reply_type, 1);
-    write_option(&cursor, DHCP_OPTION_SERVER_ID, &server_ip->addr, 4);
-    write_option(&cursor, DHCP_OPTION_SUBNET, &netmask->addr, 4);
-    write_option(&cursor, DHCP_OPTION_ROUTER, &server_ip->addr, 4);
-    write_option(&cursor, DHCP_OPTION_DNS, &server_ip->addr, 4);
-    uint32_t lease_time = lwip_htonl(DHCP_LEASE_TIME_SECONDS);
-    write_option(&cursor, DHCP_OPTION_LEASE_TIME, &lease_time, 4);
-    *cursor++ = DHCP_OPTION_END;
-
-    size_t response_size = offsetof(dhcp_message_t, options) +
-                           (size_t) (cursor - message.options);
-    if (response_size < DHCP_MIN_RESPONSE_SIZE) {
-        response_size = DHCP_MIN_RESPONSE_SIZE;
-    }
-    struct pbuf *response = pbuf_alloc(PBUF_TRANSPORT, response_size, PBUF_RAM);
-    if (response == NULL) return;
-    memcpy(response->payload, &message, response_size);
-    ip_addr_t broadcast;
-    IP_ADDR4(&broadcast, 255, 255, 255, 255);
-    udp_sendto_if(server->pcb, response, &broadcast, DHCP_CLIENT_PORT,
-                  server->netif);
-    pbuf_free(response);
 }
 
-bool dhcp_server_init(dhcp_server_t *server, struct netif *netif) {
-    if (server == NULL || netif == NULL) return false;
-    memset(server, 0, sizeof(*server));
-    server->netif = netif;
-    server->pcb = udp_new_ip_type(IPADDR_TYPE_V4);
-    if (server->pcb == NULL) return false;
-    if (udp_bind(server->pcb, IP_ANY_TYPE, DHCP_SERVER_PORT) != ERR_OK) {
-        udp_remove(server->pcb);
-        server->pcb = NULL;
-        return false;
+void dhcp_server_init(dhcp_server_t *d, struct netif *nif, ip_addr_t *ip, ip_addr_t *nm) {
+    ip_addr_copy(d->ip, *ip);
+    ip_addr_copy(d->nm, *nm);
+    memset(d->lease, 0, sizeof(d->lease));
+    if (dhcp_socket_new_dgram(&d->udp, d, dhcp_server_process) != 0) {
+        return;
     }
-    // Do not bind the receive PCB to a netif index. On CYW43 AP mode,
-    // broadcast DHCP frames can be presented through the driver's shared
-    // input netif index even though unicast traffic uses the AP netif. The
-    // dedicated server port and AP-only operating mode constrain reception;
-    // replies are still explicitly sent through server->netif below.
-    udp_recv(server->pcb, receive_dhcp, server);
-    return true;
+    dhcp_socket_bind(&d->udp, PORT_DHCP_SERVER);
+    // Restrict the server to a single interface (the AP). Without this the PCB
+    // is bound to the port on all netifs, so once a second netif exists (e.g. an
+    // active STA connection) the server could receive and answer DHCP requests
+    // arriving on it. udp_bind_netif guarantees rx and tx stay on this netif.
+    if (nif != NULL) {
+        udp_bind_netif(d->udp, nif);
+    }
 }
 
-void dhcp_server_deinit(dhcp_server_t *server) {
-    if (server != NULL && server->pcb != NULL) {
-        udp_remove(server->pcb);
-        server->pcb = NULL;
-    }
+void dhcp_server_deinit(dhcp_server_t *d) {
+    dhcp_socket_free(&d->udp);
 }
