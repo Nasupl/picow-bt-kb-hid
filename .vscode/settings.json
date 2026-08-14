@@ -1,0 +1,9 @@
+{
+  "cmake.configureOnOpen": true,
+  "cmake.generator": "Unix Makefiles",
+  "cmake.buildDirectory": "${workspaceFolder}/build",
+  "cmake.configureSettings": {
+    "PICO_SDK_PATH": "/home/k-natsusako/pico/pico-sdk",
+    "PICO_BOARD": "pico_w"
+  }
+}
