@@ -51,6 +51,8 @@ const char web_ui_html[] =
     "const name=document.createElement('div');name.className='name';name.textContent=device.name||'Unknown device';"
     "const address=document.createElement('div');address.className='muted';address.textContent=device.address+(device.hasRssi?'  '+device.rssi+' dBm':'');"
     "const badges=document.createElement('div');badges.className='badges';if(device.keyboard)badges.append(badge('Keyboard'));"
+    "if(device.reportNkro)badges.append(badge('NKRO'));if(device.reportConsumerControl)badges.append(badge('Media keys'));"
+    "if(device.reportIds)badges.append(badge('Report IDs'));if(device.reportDescriptorPresent&&!device.reportDescriptorValid)badges.append(badge('Invalid descriptor'));"
     "if(device.bonded)badges.append(badge('Paired'));if(device.connected)badges.append(badge('Connected',true));"
     "info.append(name,address,badges);row.append(info);if(device.keyboard){const connect=document.createElement('button');"
     "connect.textContent=device.connected?'Connected':'Connect';connect.className=device.connected?'':'primary';"

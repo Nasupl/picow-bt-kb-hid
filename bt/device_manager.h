@@ -22,6 +22,12 @@ typedef struct {
     uint16_t hid_control_psm;
     uint16_t hid_interrupt_psm;
     bool sdp_completed;
+    bool report_descriptor_present;
+    bool report_descriptor_valid;
+    bool report_has_keyboard;
+    bool report_has_consumer_control;
+    bool report_has_nkro_keyboard;
+    bool report_uses_ids;
 } Device;
 
 typedef struct {

@@ -10,6 +10,7 @@ add_executable(core_tests
     ../bt/device_manager.c
     ../bt/bt_state.c
     ../bt/hid_channels.c
+    ../bt/hid_report_descriptor.c
     ../bt/sdp_parser.c
     ../bt/hid_boot_report.c
     ../web/control_json.c

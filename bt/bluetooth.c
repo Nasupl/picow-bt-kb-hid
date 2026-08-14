@@ -1091,6 +1091,15 @@ void bluetooth_control_get_snapshot(bluetooth_control_snapshot_t *snapshot) {
         destination->keyboard = source->hid_supported;
         destination->bonded = source->bonded;
         destination->connected = source->connected;
+        destination->report_descriptor_present =
+            source->report_descriptor_present;
+        destination->report_descriptor_valid = source->report_descriptor_valid;
+        destination->report_has_keyboard = source->report_has_keyboard;
+        destination->report_has_consumer_control =
+            source->report_has_consumer_control;
+        destination->report_has_nkro_keyboard =
+            source->report_has_nkro_keyboard;
+        destination->report_uses_ids = source->report_uses_ids;
     }
 }
 

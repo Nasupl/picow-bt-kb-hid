@@ -11,6 +11,7 @@
 #include "control_json.h"
 #include "hid_boot_report.h"
 #include "hid_channels.h"
+#include "hid_report_descriptor.h"
 #include "sdp_parser.h"
 
 const char *bd_addr_to_str(const uint8_t address[6]) {
@@ -217,22 +218,54 @@ static void test_sdp_parser(void) {
     const uint8_t service_name[] = {
         0x25, 0x08, 'K', 'e', 'y', 'b', 'o', 'a', 'r', 'd',
     };
+    const uint8_t hid_descriptor[] = {
+        0x35, 0x15, 0x35, 0x13, 0x08, 0x22, 0x25, 0x0f,
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0xc0,
+    };
 
     SdpParser parser = {0};
     Device device = {0};
     feed_sdp(&parser, &device, 0x0004, control, sizeof(control));
     feed_sdp(&parser, &device, 0x000d, interrupt, sizeof(interrupt));
     feed_sdp(&parser, &device, 0x0100, service_name, sizeof(service_name));
+    feed_sdp(&parser, &device, 0x0206, hid_descriptor,
+             sizeof(hid_descriptor));
     assert(device.hid_control_psm == 0x0011);
     assert(device.hid_interrupt_psm == 0x0013);
     assert(device.has_name && strcmp(device.name, "Keyboard") == 0);
-    assert(parser.completed_attribute_count == 3);
+    assert(device.report_descriptor_present && device.report_descriptor_valid);
+    assert(device.report_has_keyboard && !device.report_has_nkro_keyboard);
+    assert(parser.completed_attribute_count == 4);
 
     sdp_parser_reset(&parser);
     assert(parser.completed_attribute_count == 0);
     uint8_t malformed[] = {0x35, 0xff};
     feed_sdp(&parser, &device, 0x0004, malformed, sizeof(malformed));
     assert(parser.completed_attribute_count == 1);
+}
+
+static void test_hid_report_descriptor(void) {
+    const uint8_t nkro[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x75, 0x01, 0x95, 0x68, 0x85, 0x01, 0x81, 0x02, 0xc0,
+    };
+    hid_report_descriptor_info_t info =
+        hid_report_descriptor_parse(nkro, sizeof(nkro));
+    assert(info.valid && info.has_keyboard && info.has_nkro_keyboard);
+    assert(info.uses_report_ids && !info.has_consumer_control);
+
+    const uint8_t consumer[] = {
+        0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x75, 0x10,
+        0x95, 0x01, 0x81, 0x00, 0xc0,
+    };
+    info = hid_report_descriptor_parse(consumer, sizeof(consumer));
+    assert(info.valid && info.has_consumer_control && !info.has_keyboard);
+
+    const uint8_t malformed[] = {0x05, 0x01, 0x09, 0x06, 0xa1, 0x01};
+    info = hid_report_descriptor_parse(malformed, sizeof(malformed));
+    assert(!info.valid);
+    assert(!hid_report_descriptor_parse(NULL, 0).valid);
 }
 
 static void test_control_commands(void) {
@@ -309,6 +342,11 @@ static void test_control_snapshot_json(void) {
     snapshot.devices[0].keyboard = true;
     snapshot.devices[0].bonded = true;
     snapshot.devices[0].connected = true;
+    snapshot.devices[0].report_descriptor_present = true;
+    snapshot.devices[0].report_descriptor_valid = true;
+    snapshot.devices[0].report_has_keyboard = true;
+    snapshot.devices[0].report_has_nkro_keyboard = true;
+    snapshot.devices[0].report_uses_ids = true;
 
     char json[768];
     size_t written = 0;
@@ -321,6 +359,10 @@ static void test_control_snapshot_json(void) {
     assert(strstr(json, "Key\\\"board\\\\test\\u000a") != NULL);
     assert(strstr(json, "\"rssi\":-42") != NULL);
     assert(strstr(json, "\"connected\":true") != NULL);
+    assert(strstr(json, "\"reportDescriptorValid\":true") != NULL);
+    assert(strstr(json, "\"reportKeyboard\":true") != NULL);
+    assert(strstr(json, "\"reportNkro\":true") != NULL);
+    assert(strstr(json, "\"reportIds\":true") != NULL);
 
     char too_small[16];
     assert(!control_json_write_snapshot(&snapshot, too_small,
@@ -351,6 +393,7 @@ int main(void) {
     test_bluetooth_state_machine();
     test_hid_channel_state();
     test_sdp_parser();
+    test_hid_report_descriptor();
     test_control_commands();
     test_control_request_queue();
     test_control_snapshot_json();

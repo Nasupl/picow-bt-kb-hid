@@ -4,12 +4,14 @@
 #include <stddef.h>
 #include <string.h>
 
+#include "hid_report_descriptor.h"
 #include "usb_serial.h"
 
 #define SDP_ATTR_PROTOCOL_DESCRIPTOR_LIST 0x0004
 #define SDP_ATTR_ADDITIONAL_PROTOCOL_DESCRIPTOR_LISTS 0x000d
 #define SDP_ATTR_SERVICE_NAME 0x0100
 #define SDP_ATTR_PROVIDER_NAME 0x0102
+#define SDP_ATTR_HID_DESCRIPTOR_LIST 0x0206
 
 #define DE_TYPE_UINT 1
 #define DE_TYPE_UUID 3
@@ -60,6 +62,47 @@ static bool element_uint16(const DataElement *element, uint16_t *value) {
     return true;
 }
 
+static bool find_report_descriptor(const uint8_t *buffer, uint16_t size,
+                                   unsigned depth, const uint8_t **descriptor,
+                                   uint16_t *descriptor_size) {
+    if (depth > 4) return false;
+    DataElement root;
+    if (!read_element(buffer, size, &root) || root.type != DE_TYPE_SEQUENCE) {
+        return false;
+    }
+    uint16_t offset = 0;
+    DataElement first = {0};
+    if (read_element(root.data, root.data_size, &first) &&
+        first.type == DE_TYPE_UINT && first.data_size == 1 &&
+        first.data[0] == 0x22) {
+        offset = first.total_size;
+        DataElement report;
+        if (offset < root.data_size &&
+            read_element(&root.data[offset],
+                         (uint16_t) (root.data_size - offset), &report) &&
+            report.type == DE_TYPE_STRING) {
+            *descriptor = report.data;
+            *descriptor_size = report.data_size;
+            return true;
+        }
+    }
+    offset = 0;
+    while (offset < root.data_size) {
+        DataElement child;
+        if (!read_element(&root.data[offset],
+                          (uint16_t) (root.data_size - offset), &child)) {
+            return false;
+        }
+        if (child.type == DE_TYPE_SEQUENCE &&
+            find_report_descriptor(&root.data[offset], child.total_size,
+                                   depth + 1, descriptor, descriptor_size)) {
+            return true;
+        }
+        offset = (uint16_t) (offset + child.total_size);
+    }
+    return false;
+}
+
 static bool find_l2cap_psm(const uint8_t *buffer, uint16_t size,
                            uint16_t *psm) {
     DataElement root;
@@ -102,6 +145,31 @@ static bool find_l2cap_psm(const uint8_t *buffer, uint16_t size,
 
 static void parse_attribute(Device *device, uint16_t attribute_id,
                             const uint8_t *buffer, uint16_t length) {
+    if (attribute_id == SDP_ATTR_HID_DESCRIPTOR_LIST) {
+        if (device == NULL) return;
+        device->report_descriptor_present = true;
+        const uint8_t *descriptor;
+        uint16_t descriptor_size;
+        if (!find_report_descriptor(buffer, length, 0, &descriptor,
+                                    &descriptor_size)) {
+            usb_serial_printf("[BT] HID Report Descriptor malformed\r\n");
+            return;
+        }
+        hid_report_descriptor_info_t info = hid_report_descriptor_parse(
+            descriptor, descriptor_size);
+        device->report_descriptor_valid = info.valid;
+        device->report_has_keyboard = info.has_keyboard;
+        device->report_has_consumer_control = info.has_consumer_control;
+        device->report_has_nkro_keyboard = info.has_nkro_keyboard;
+        device->report_uses_ids = info.uses_report_ids;
+        usb_serial_printf(
+            "[BT] HID Report Descriptor valid=%u keyboard=%u consumer=%u "
+            "nkro=%u report_ids=%u bytes=%u\r\n",
+            info.valid, info.has_keyboard, info.has_consumer_control,
+            info.has_nkro_keyboard, info.uses_report_ids,
+            (unsigned int) descriptor_size);
+        return;
+    }
     if (attribute_id == SDP_ATTR_PROTOCOL_DESCRIPTOR_LIST ||
         attribute_id == SDP_ATTR_ADDITIONAL_PROTOCOL_DESCRIPTOR_LISTS) {
         uint16_t psm;
@@ -145,8 +213,15 @@ void sdp_parser_feed(SdpParser *parser, Device *device,
                      uint16_t attribute_id, uint16_t attribute_length,
                      uint16_t attribute_offset, uint8_t data) {
     if (parser == NULL || attribute_length == 0 ||
-        attribute_length > sizeof(parser->buffer) ||
         attribute_offset >= attribute_length) return;
+
+    if (attribute_length > sizeof(parser->buffer)) {
+        if (attribute_id == SDP_ATTR_HID_DESCRIPTOR_LIST && device != NULL) {
+            device->report_descriptor_present = true;
+            device->report_descriptor_valid = false;
+        }
+        return;
+    }
 
     parser->buffer[attribute_offset] = data;
     if (attribute_offset + 1 == attribute_length) {
