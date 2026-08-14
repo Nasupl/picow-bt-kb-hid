@@ -238,6 +238,13 @@ static void test_sdp_parser(void) {
     assert(device.report_has_keyboard && !device.report_has_nkro_keyboard);
     assert(parser.completed_attribute_count == 4);
 
+    const uint8_t malformed_descriptor[] = {0x35, 0x01, 0x00};
+    feed_sdp(&parser, &device, 0x0206, malformed_descriptor,
+             sizeof(malformed_descriptor));
+    assert(device.report_descriptor_present &&
+           !device.report_descriptor_valid && !device.report_has_keyboard &&
+           !device.report_has_consumer_control && !device.report_uses_ids);
+
     sdp_parser_reset(&parser);
     assert(parser.completed_attribute_count == 0);
     uint8_t malformed[] = {0x35, 0xff};
@@ -265,6 +272,41 @@ static void test_hid_report_descriptor(void) {
     const uint8_t malformed[] = {0x05, 0x01, 0x09, 0x06, 0xa1, 0x01};
     info = hid_report_descriptor_parse(malformed, sizeof(malformed));
     assert(!info.valid);
+    assert(!info.has_keyboard && !info.has_consumer_control);
+
+    const uint8_t partial_then_truncated[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0xc0, 0x85,
+    };
+    info = hid_report_descriptor_parse(partial_then_truncated,
+                                       sizeof(partial_then_truncated));
+    assert(!info.valid && !info.has_keyboard && !info.uses_report_ids);
+
+    const uint8_t extended_usage[] = {
+        0x0b, 0x06, 0x00, 0x01, 0x00, 0xa1, 0x01, 0xc0,
+    };
+    info = hid_report_descriptor_parse(extended_usage,
+                                       sizeof(extended_usage));
+    assert(info.valid && info.has_keyboard);
+
+    const uint8_t constant_bitmap[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x75, 0x01, 0x95, 0x68, 0x81, 0x01, 0xc0,
+    };
+    info = hid_report_descriptor_parse(constant_bitmap,
+                                       sizeof(constant_bitmap));
+    assert(info.valid && info.has_keyboard && !info.has_nkro_keyboard);
+
+    const uint8_t malformed_end_collection[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0xc1, 0x00,
+    };
+    assert(!hid_report_descriptor_parse(malformed_end_collection,
+                                        sizeof(malformed_end_collection)).valid);
+
+    const uint8_t mouse[] = {
+        0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0xc0,
+    };
+    info = hid_report_descriptor_parse(mouse, sizeof(mouse));
+    assert(info.valid && !info.has_keyboard && !info.has_consumer_control);
     assert(!hid_report_descriptor_parse(NULL, 0).valid);
 }
 

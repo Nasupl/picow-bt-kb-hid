@@ -335,6 +335,12 @@ static void start_sdp_discovery(void) {
         device->hid_interrupt_psm = 0;
         device->hid_service_found = false;
         device->sdp_completed = false;
+        device->report_descriptor_present = false;
+        device->report_descriptor_valid = false;
+        device->report_has_keyboard = false;
+        device->report_has_consumer_control = false;
+        device->report_has_nkro_keyboard = false;
+        device->report_uses_ids = false;
     }
     sdp_parser_reset(&sdp_parser);
     transition_to_state(STATE_SERVICE_DISCOVERY);

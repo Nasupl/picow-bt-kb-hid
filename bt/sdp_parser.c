@@ -148,6 +148,11 @@ static void parse_attribute(Device *device, uint16_t attribute_id,
     if (attribute_id == SDP_ATTR_HID_DESCRIPTOR_LIST) {
         if (device == NULL) return;
         device->report_descriptor_present = true;
+        device->report_descriptor_valid = false;
+        device->report_has_keyboard = false;
+        device->report_has_consumer_control = false;
+        device->report_has_nkro_keyboard = false;
+        device->report_uses_ids = false;
         const uint8_t *descriptor;
         uint16_t descriptor_size;
         if (!find_report_descriptor(buffer, length, 0, &descriptor,
@@ -219,6 +224,10 @@ void sdp_parser_feed(SdpParser *parser, Device *device,
         if (attribute_id == SDP_ATTR_HID_DESCRIPTOR_LIST && device != NULL) {
             device->report_descriptor_present = true;
             device->report_descriptor_valid = false;
+            device->report_has_keyboard = false;
+            device->report_has_consumer_control = false;
+            device->report_has_nkro_keyboard = false;
+            device->report_uses_ids = false;
         }
         return;
     }
