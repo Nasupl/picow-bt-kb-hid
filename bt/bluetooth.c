@@ -223,6 +223,16 @@ static bool begin_connection(bd_addr_t address) {
     return true;
 }
 
+static void cancel_pending_connection(void) {
+    if (current_state != STATE_CONNECTING || !connecting_device_valid) return;
+    connection_cancel_requested = true;
+    uint8_t status = hci_send_cmd(&hci_create_connection_cancel,
+                                  connecting_device_addr);
+    usb_serial_printf(
+        "[BT] Pending connection cancel requested status=0x%02x\r\n",
+        status);
+}
+
 static void log_device(Device const *device) {
     usb_serial_printf("[BT] Found: %s RSSI=%d CoD=0x%06lx\r\n",
                       bd_addr_to_str(device->address), device->rssi, (unsigned long) device->class_of_device);
@@ -551,6 +561,12 @@ static void hci_event_handler(uint8_t packet_type, uint16_t channel,
                     &device_manager, target_addr);
             }
             if (have_target) {
+                if (auto_connect_enabled && !selected_device_valid) {
+                    memcpy(selected_device_addr, target_addr,
+                           sizeof(selected_device_addr));
+                    selected_device_valid = true;
+                    (void) store_selected_device(selected_device_addr);
+                }
                 Device *target = device_manager_find(&device_manager, target_addr);
                 if (target != NULL && target->bonded) {
                     usb_serial_printf("[BT] Selecting bonded keyboard %s\r\n",
@@ -978,12 +994,7 @@ static void execute_control_request(
                 gap_disconnect(acl_handle);
             } else if (current_state == STATE_CONNECTING &&
                        connecting_device_valid) {
-                connection_cancel_requested = true;
-                uint8_t status = hci_send_cmd(&hci_create_connection_cancel,
-                                              connecting_device_addr);
-                usb_serial_printf(
-                    "[BT] Pending connection cancel requested status=0x%02x\r\n",
-                    status);
+                cancel_pending_connection();
             } else {
                 usb_serial_printf("[BT] No active keyboard connection\r\n");
             }
@@ -1005,6 +1016,12 @@ static void execute_control_request(
                     &device_manager, target_address);
             }
             if (current_state == STATE_IDLE && have_target) {
+                if (!selected_device_valid) {
+                    memcpy(selected_device_addr, target_address,
+                           sizeof(selected_device_addr));
+                    selected_device_valid = true;
+                    (void) store_selected_device(selected_device_addr);
+                }
                 begin_connection(target_address);
             } else if (current_state == STATE_IDLE) {
                 start_inquiry();
@@ -1024,6 +1041,8 @@ static void execute_control_request(
             usb_serial_printf("[BT] All keyboard bonds deleted\r\n");
             if (acl_handle != HCI_CON_HANDLE_INVALID) {
                 gap_disconnect(acl_handle);
+            } else {
+                cancel_pending_connection();
             }
             break;
     }
