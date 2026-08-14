@@ -565,6 +565,7 @@ static void hci_event_handler(uint8_t packet_type, uint16_t channel,
                     "[BT] Explicit disconnect completed pending connection cancellation\r\n");
                 if (status == ERROR_CODE_SUCCESS) gap_disconnect(handle);
                 transition_to_state(STATE_IDLE);
+                start_idle_timer();
                 break;
             }
 
