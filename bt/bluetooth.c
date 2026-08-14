@@ -24,6 +24,9 @@
 static btstack_packet_callback_registration_t hci_event_callback;
 static bd_addr_t local_address;
 static bd_addr_t connected_device_addr;
+static bd_addr_t connecting_device_addr;
+static bool connecting_device_valid;
+static bool connection_cancel_requested;
 static bool stack_working;
 static bool startup_logged;
 static bt_state_t current_state = STATE_INITIALIZING;
@@ -149,13 +152,15 @@ static void start_inquiry(void) {
 static void inquiry_timer_handler(btstack_timer_source_t *ts) {
     (void) ts;
     inquiry_timer_armed = false;
-    if (current_state == STATE_IDLE && usb_serial_connected()) {
+    if (current_state == STATE_IDLE && auto_connect_enabled &&
+        selected_device_valid) {
+        usb_serial_printf("[BT] Auto-recovery retry\r\n");
         start_inquiry();
     }
 }
 
 static void start_idle_timer(void) {
-    if (!auto_connect_enabled) {
+    if (!auto_connect_enabled || !selected_device_valid) {
         return;
     }
     if (inquiry_timer_armed) {
@@ -180,11 +185,15 @@ static bool begin_connection(const bd_addr_t address) {
         inquiry_timer_armed = false;
     }
     usb_serial_printf("[BT] Connecting to %s...\r\n", bd_addr_to_str(address));
+    memcpy(connecting_device_addr, address, sizeof(connecting_device_addr));
+    connecting_device_valid = true;
+    connection_cancel_requested = false;
     transition_to_state(STATE_CONNECTING);
     uint8_t status = hci_send_cmd(&hci_create_connection, address,
                                   hci_usable_acl_packet_types(), 0, 0, 0, 1);
     if (status != ERROR_CODE_SUCCESS) {
         usb_serial_printf("[BT] Connection failed status=0x%02x\r\n", status);
+        connecting_device_valid = false;
         transition_to_state(STATE_IDLE);
         start_idle_timer();
         return false;
@@ -454,7 +463,10 @@ static void hci_event_handler(uint8_t packet_type, uint16_t channel,
                 stack_working = true;
                 transition_to_state(STATE_IDLE);
 
-                if (usb_serial_connected()) {
+                if (auto_connect_enabled && selected_device_valid) {
+                    usb_serial_printf(
+                        "[BT] Auto-recovery starting for saved keyboard %s\r\n",
+                        bd_addr_to_str(selected_device_addr));
                     start_inquiry();
                 }
             }
@@ -512,7 +524,7 @@ static void hci_event_handler(uint8_t packet_type, uint16_t channel,
                     have_target = true;
                 }
             }
-            if (auto_connect_enabled && !have_target) {
+            if (auto_connect_enabled && !selected_device_valid && !have_target) {
                 have_target = device_manager_get_connection_target(
                     &device_manager, target_addr);
             }
@@ -543,6 +555,16 @@ static void hci_event_handler(uint8_t packet_type, uint16_t channel,
                 if (status == ERROR_CODE_SUCCESS) {
                     gap_disconnect(handle);
                 }
+                break;
+            }
+
+            connecting_device_valid = false;
+            if (connection_cancel_requested) {
+                connection_cancel_requested = false;
+                usb_serial_printf(
+                    "[BT] Explicit disconnect completed pending connection cancellation\r\n");
+                if (status == ERROR_CODE_SUCCESS) gap_disconnect(handle);
+                transition_to_state(STATE_IDLE);
                 break;
             }
 
@@ -926,6 +948,14 @@ static void execute_control_request(
             auto_connect_enabled = false;
             if (acl_handle != HCI_CON_HANDLE_INVALID) {
                 gap_disconnect(acl_handle);
+            } else if (current_state == STATE_CONNECTING &&
+                       connecting_device_valid) {
+                connection_cancel_requested = true;
+                uint8_t status = hci_send_cmd(&hci_create_connection_cancel,
+                                              connecting_device_addr);
+                usb_serial_printf(
+                    "[BT] Pending connection cancel requested status=0x%02x\r\n",
+                    status);
             } else {
                 usb_serial_printf("[BT] No active keyboard connection\r\n");
             }
@@ -1109,9 +1139,6 @@ void bluetooth_task(void) {
         usb_serial_printf("[BT] Stack started; adapter address %s\r\n",
                           bd_addr_to_str(local_address));
 
-        if (current_state == STATE_IDLE) {
-            start_inquiry();
-        }
     }
 }
 

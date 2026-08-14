@@ -77,8 +77,8 @@ ctest --test-dir build-host-tests --output-on-failure
 2. Copy `build/pico_bt_keyboard.uf2` to the mounted `RPI-RP2` drive.
 3. The Pico W reboots and enumerates as **Pico W USB HID Keyboard** plus a USB
    serial (CDC) port.
-4. Open the CDC serial port with any terminal settings. BTstack starts a
-   Bluetooth Classic Inquiry scan after the serial port is opened.
+4. A saved keyboard is discovered and reconnected automatically. Open the CDC
+   serial port only when logs or text commands are needed.
 
 The fixed USB typing demo is disabled by default. Enable it only for USB API
 development with `-DPICO_KEYBOARD_DEMO=ON` when configuring CMake.
@@ -112,7 +112,7 @@ The Bluetooth module manages Bluetooth Classic operations using BTstack.
 
 ### Components
 
-- **`bt/bluetooth.c`**: Initializes BTstack, registers the HCI event handler, and manages the lifecycle of Bluetooth operations. Once the stack is ready and the serial console is connected, it triggers a Bluetooth Classic Inquiry (`gap_inquiry_start`) and logs events to the USB CDC serial interface.
+- **`bt/bluetooth.c`**: Initializes BTstack, registers the HCI event handler, and manages the lifecycle of Bluetooth operations. Once the stack is ready, it searches for a saved keyboard without depending on the USB CDC connection and logs available diagnostics there.
 - **`bt/bt_state.c`**: Defines connection states, names, and allowed transitions.
 - **`bt/control_command.c` / `bt/control_request_queue.c`**: Parse CDC commands
   and queue connection-management requests for execution in the cooperative
@@ -139,7 +139,7 @@ The Bluetooth module operates as a finite state machine to manage scan intervals
 stateDiagram-v2
     [*] --> Initializing
     Initializing --> Idle : BTstack Working
-    Idle --> Inquiry : USB Serial Connected / Timer Expired
+    Idle --> Inquiry : Saved keyboard / Retry timer expired
     Inquiry --> Idle : Inquiry Complete (No HID peripheral found)
     Inquiry --> Connecting : Inquiry Complete (HID peripheral found)
     Connecting --> Connected : ACL Link Established
@@ -157,7 +157,7 @@ stateDiagram-v2
 ```
 
 - **`Initializing`**: BTstack is powering up and registering packet handlers.
-- **`Idle`**: The stack is ready. It waits for the USB serial console to be opened, or waits 5 seconds (via an asynchronous timer) between periodic Inquiry scans.
+- **`Idle`**: The stack is ready. With automatic reconnection enabled and a saved keyboard present, it waits 5 seconds (via an asynchronous timer) between Inquiry scans.
 - **`Inquiry`**: Performs a 5-second Bluetooth Classic Inquiry scan. No scan is started or scheduled while connected or connecting.
 - **`Connecting`**: Initiates a Classic ACL connection to the target device.
 - **`Connected`**: An ACL link is active.
