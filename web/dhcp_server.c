@@ -29,6 +29,7 @@
 //  https://tools.ietf.org/html/rfc2132 -- DHCP Options and BOOTP Vendor Extensions
 
 #include <stdio.h>
+#include <stddef.h>
 #include <string.h>
 #include <errno.h>
 
@@ -144,8 +145,15 @@ static int dhcp_socket_sendto(struct udp_pcb **udp, struct netif *nif, const voi
     return len;
 }
 
-static uint8_t *opt_find(uint8_t *opt, uint8_t cmd) {
-    for (int i = 0; i < 308 && opt[i] != DHCP_OPT_END;) {
+static uint8_t *opt_find(uint8_t *opt, size_t length, uint8_t cmd) {
+    for (size_t i = 0; i < length && opt[i] != DHCP_OPT_END;) {
+        if (opt[i] == DHCP_OPT_PAD) {
+            ++i;
+            continue;
+        }
+        if (i + 1 >= length || i + 2 + opt[i + 1] > length) {
+            break;
+        }
         if (opt[i] == cmd) {
             return &opt[i];
         }
@@ -189,6 +197,7 @@ static void dhcp_server_process(void *arg, struct udp_pcb *upcb, struct pbuf *p,
 
     // This is around 548 bytes
     dhcp_msg_t dhcp_msg;
+    memset(&dhcp_msg, 0, sizeof(dhcp_msg));
 
     #define DHCP_MIN_SIZE (240 + 3)
     if (p->tot_len < DHCP_MIN_SIZE) {
@@ -205,9 +214,10 @@ static void dhcp_server_process(void *arg, struct udp_pcb *upcb, struct pbuf *p,
 
     uint8_t *opt = (uint8_t *)&dhcp_msg.options;
     opt += 4; // assume magic cookie: 99, 130, 83, 99
+    size_t incoming_opt_length = len - offsetof(dhcp_msg_t, options) - 4;
 
-    uint8_t *msgtype = opt_find(opt, DHCP_OPT_MSG_TYPE);
-    if (msgtype == NULL) {
+    uint8_t *msgtype = opt_find(opt, incoming_opt_length, DHCP_OPT_MSG_TYPE);
+    if (msgtype == NULL || msgtype[1] != 1) {
         // A DHCP package without MSG_TYPE?
         goto ignore_request;
     }
@@ -250,16 +260,23 @@ static void dhcp_server_process(void *arg, struct udp_pcb *upcb, struct pbuf *p,
 
         case DHCPREQUEST: {
             d->request_count++;
-            uint8_t *o = opt_find(opt, DHCP_OPT_REQUESTED_IP);
-            if (o == NULL) {
+            uint8_t *o = opt_find(opt, incoming_opt_length,
+                                  DHCP_OPT_REQUESTED_IP);
+            if (o != NULL && o[1] != 4) {
+                goto ignore_request;
+            }
+            const uint8_t *requested_ip = o != NULL ? o + 2 : dhcp_msg.ciaddr;
+            static const uint8_t zero_ip[4] = {0};
+            if (memcmp(requested_ip, zero_ip, sizeof(zero_ip)) == 0) {
                 // Should be NACK
                 goto ignore_request;
             }
-            if (memcmp(o + 2, &ip4_addr_get_u32(ip_2_ip4(&d->ip)), 3) != 0) {
+            if (memcmp(requested_ip,
+                       &ip4_addr_get_u32(ip_2_ip4(&d->ip)), 3) != 0) {
                 // Should be NACK
                 goto ignore_request;
             }
-            uint8_t yi = o[5] - DHCPS_BASE_IP;
+            uint8_t yi = requested_ip[3] - DHCPS_BASE_IP;
             if (yi >= DHCPS_MAX_IP) {
                 // Should be NACK
                 goto ignore_request;
@@ -282,7 +299,8 @@ static void dhcp_server_process(void *arg, struct udp_pcb *upcb, struct pbuf *p,
             // build the reply. It is optional and client-controlled, so it can
             // be absent (some phones omit it or send a randomised name).
             char hostname[32] = "";
-            uint8_t *hn = opt_find(opt, DHCP_OPT_HOST_NAME);
+            uint8_t *hn = opt_find(opt, incoming_opt_length,
+                                   DHCP_OPT_HOST_NAME);
             if (hn != NULL) {
                 uint8_t hn_len = hn[1];
                 if (hn_len > sizeof(hostname) - 1) {
@@ -311,8 +329,14 @@ static void dhcp_server_process(void *arg, struct udp_pcb *upcb, struct pbuf *p,
     opt_write_n(&opt, DHCP_OPT_DNS, 4, &ip4_addr_get_u32(ip_2_ip4(&d->ip))); // this server is the dns
     opt_write_u32(&opt, DHCP_OPT_IP_LEASE_TIME, DEFAULT_LEASE_TIME_S);
     *opt++ = DHCP_OPT_END;
+    size_t response_length = opt - (uint8_t *)&dhcp_msg;
+    if (response_length < 300) {
+        memset(opt, 0, 300 - response_length);
+        response_length = 300;
+    }
     struct netif *nif = ip_current_input_netif();
-    dhcp_socket_sendto(&d->udp, nif, &dhcp_msg, opt - (uint8_t *)&dhcp_msg, 0xffffffff, PORT_DHCP_CLIENT);
+    dhcp_socket_sendto(&d->udp, nif, &dhcp_msg, response_length, 0xffffffff,
+                       PORT_DHCP_CLIENT);
 
 ignore_request:
     pbuf_free(p);

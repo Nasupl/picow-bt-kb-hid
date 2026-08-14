@@ -4,7 +4,7 @@ Pico W firmware that exposes a TinyUSB composite USB device containing a
 boot-protocol HID keyboard and a USB CDC serial port. It discovers a Bluetooth
 Classic keyboard, opens its HID Control and Interrupt channels, requests Boot
 Protocol, and forwards eight-byte boot-keyboard input reports to USB. Wi-Fi is
-not enabled.
+enabled as a password-protected configuration access point.
 
 ## Build
 
