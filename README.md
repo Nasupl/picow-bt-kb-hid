@@ -52,7 +52,8 @@ curl -X POST 'http://192.168.4.1/api/connect?address=XX:XX:XX:XX:XX:XX'
 
 Action endpoints return HTTP `202` after the request is queued. Poll
 `/api/status` to observe the resulting asynchronous state change. The browser
-UI at `/` is tracked separately and is not implemented yet.
+UI at `/` provides the same status, scan, connect, disconnect, reconnect, and
+forget operations without requiring a CDC terminal.
 
 ## Host tests
 
