@@ -15,7 +15,7 @@
 #define WEB_AP_SSID "PicoW-Keyboard-Setup"
 #define WEB_AP_PASSWORD "pico-keyboard"
 #define WEB_MAX_CLIENTS 2
-#define WEB_REQUEST_SIZE 512
+#define WEB_REQUEST_SIZE 1536
 #define WEB_RESPONSE_HEADER_SIZE 256
 
 typedef struct {
