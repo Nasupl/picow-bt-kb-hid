@@ -3,6 +3,7 @@
 #include "bluetooth_app.h"
 #include "hid_keyboard.h"
 #include "tusb.h"
+#include "web_config.h"
 
 int main(void) {
     board_init();
@@ -16,6 +17,7 @@ int main(void) {
     }
     board_init_after_tusb();
     bluetooth_init();
+    web_config_init();
 
     while (true) {
         hid_keyboard_task();

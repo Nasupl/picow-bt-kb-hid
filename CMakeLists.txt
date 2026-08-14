@@ -33,6 +33,8 @@ add_executable(pico_bt_keyboard
     usb/usb_serial.c
     usb/usb_descriptors.c
     web/control_json.c
+    web/dhcp_server.c
+    web/web_config.c
 )
 
 if (PICO_KEYBOARD_DEMO)
@@ -44,6 +46,7 @@ target_include_directories(pico_bt_keyboard PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/include
     ${CMAKE_CURRENT_LIST_DIR}/bt
     ${CMAKE_CURRENT_LIST_DIR}/web
+    ${CMAKE_CURRENT_LIST_DIR}
 )
 
 target_compile_options(pico_bt_keyboard PRIVATE -Wall -Wextra)
@@ -53,9 +56,13 @@ target_link_libraries(pico_bt_keyboard
     pico_unique_id
     tinyusb_device
     tinyusb_board
-    pico_cyw43_arch_none
+    pico_cyw43_arch_lwip_poll
     pico_btstack_cyw43
     pico_btstack_classic
+)
+
+pico_configure_ip4_address(pico_bt_keyboard PRIVATE
+    CYW43_DEFAULT_IP_AP_ADDRESS 192.168.4.1
 )
 
 # This firmware owns the USB device stack for HID; do not add the SDK CDC
