@@ -10,6 +10,7 @@
 #include "lwip/def.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/pbuf.h"
+#include "usb_serial.h"
 
 #define DHCP_SERVER_PORT 67
 #define DHCP_CLIENT_PORT 68
@@ -30,6 +31,7 @@
 #define DHCP_LEASE_BASE 16
 #define DHCP_MAGIC_COOKIE 0x63825363u
 #define DHCP_FIXED_SIZE 240
+#define DHCP_MIN_RESPONSE_SIZE 300
 
 typedef struct __attribute__((packed)) {
     uint8_t op;
@@ -92,10 +94,9 @@ static void receive_dhcp(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     (void) address;
     (void) port;
     dhcp_server_t *server = arg;
-    dhcp_message_t message;
-    if (p->tot_len < DHCP_FIXED_SIZE + 3 ||
-        pbuf_copy_partial(p, &message, sizeof(message), 0) <
-            DHCP_FIXED_SIZE + 3) {
+    dhcp_message_t message = {0};
+    size_t received = pbuf_copy_partial(p, &message, sizeof(message), 0);
+    if (received < DHCP_FIXED_SIZE + 3) {
         pbuf_free(p);
         return;
     }
@@ -103,7 +104,7 @@ static void receive_dhcp(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     if (message.op != DHCP_BOOTREQUEST ||
         message.cookie != lwip_htonl(DHCP_MAGIC_COOKIE)) return;
 
-    size_t options_length = sizeof(message.options);
+    size_t options_length = received - offsetof(dhcp_message_t, options);
     const uint8_t *message_type = find_option(
         message.options, options_length, DHCP_OPTION_MESSAGE_TYPE);
     if (message_type == NULL || message_type[1] != 1) return;
@@ -113,6 +114,14 @@ static void receive_dhcp(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     uint8_t reply_type;
     if (message_type[2] == DHCP_DISCOVER) {
         reply_type = DHCP_OFFER;
+        // Reserve the offered slot so a following request from this client
+        // resolves to the same address even if another discovery arrives.
+        memcpy(server->leases[lease].mac, message.chaddr, 6);
+        usb_serial_printf(
+            "[WEB] DHCP DISCOVER mac=%02x:%02x:%02x:%02x:%02x:%02x offer=192.168.4.%u\r\n",
+            message.chaddr[0], message.chaddr[1], message.chaddr[2],
+            message.chaddr[3], message.chaddr[4], message.chaddr[5],
+            (unsigned int) (DHCP_LEASE_BASE + lease));
     } else if (message_type[2] == DHCP_REQUEST) {
         const uint8_t *requested = find_option(
             message.options, options_length, DHCP_OPTION_REQUESTED_IP);
@@ -120,6 +129,11 @@ static void receive_dhcp(void *arg, struct udp_pcb *pcb, struct pbuf *p,
             requested[5] != DHCP_LEASE_BASE + lease) return;
         memcpy(server->leases[lease].mac, message.chaddr, 6);
         reply_type = DHCP_ACK;
+        usb_serial_printf(
+            "[WEB] DHCP REQUEST mac=%02x:%02x:%02x:%02x:%02x:%02x ack=192.168.4.%u\r\n",
+            message.chaddr[0], message.chaddr[1], message.chaddr[2],
+            message.chaddr[3], message.chaddr[4], message.chaddr[5],
+            (unsigned int) (DHCP_LEASE_BASE + lease));
     } else {
         return;
     }
@@ -128,6 +142,7 @@ static void receive_dhcp(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     const ip4_addr_t *netmask = netif_ip4_netmask(server->netif);
     memcpy(message.yiaddr, &server_ip->addr, 4);
     message.yiaddr[3] = (uint8_t) (DHCP_LEASE_BASE + lease);
+    memcpy(message.siaddr, &server_ip->addr, 4);
     message.op = DHCP_BOOTREPLY;
     message.cookie = lwip_htonl(DHCP_MAGIC_COOKIE);
 
@@ -143,6 +158,9 @@ static void receive_dhcp(void *arg, struct udp_pcb *pcb, struct pbuf *p,
 
     size_t response_size = offsetof(dhcp_message_t, options) +
                            (size_t) (cursor - message.options);
+    if (response_size < DHCP_MIN_RESPONSE_SIZE) {
+        response_size = DHCP_MIN_RESPONSE_SIZE;
+    }
     struct pbuf *response = pbuf_alloc(PBUF_TRANSPORT, response_size, PBUF_RAM);
     if (response == NULL) return;
     memcpy(response->payload, &message, response_size);
