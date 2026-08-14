@@ -29,7 +29,8 @@ bool bt_state_transition_allowed(bt_state_t from, bt_state_t to) {
         return true;
     }
     switch (from) {
-        case STATE_IDLE: return to == STATE_INQUIRY;
+        case STATE_IDLE:
+            return to == STATE_INQUIRY || to == STATE_CONNECTING;
         case STATE_INQUIRY: return to == STATE_CONNECTING;
         case STATE_CONNECTING: return to == STATE_CONNECTED;
         case STATE_CONNECTED: return to == STATE_AUTHENTICATING;

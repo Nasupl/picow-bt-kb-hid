@@ -34,7 +34,7 @@ const char web_ui_html[] =
     "let busy=false,currentState='Unknown';function message(text,error=false){$('message').textContent=text;$('message').className=error?'error':''}"
     "function updateControls(){$('refresh').disabled=busy;$('scan').disabled=busy||currentState!=='Idle';"
     "$('forget').disabled=busy||!['Idle','HIDConnected','Disconnected'].includes(currentState);"
-    "$('reconnect').disabled=busy||currentState!=='Idle';const active=['Connected','Authenticating','ServiceDiscovery','OpeningControl','SettingBootProtocol','OpeningInterrupt','HIDConnected'];"
+    "$('reconnect').disabled=busy||currentState!=='Idle';const active=['Connecting','Connected','Authenticating','ServiceDiscovery','OpeningControl','SettingBootProtocol','OpeningInterrupt','HIDConnected'];"
     "$('disconnect').disabled=busy||!active.includes(currentState);"
     "document.querySelectorAll('[data-connect]').forEach(button=>button.disabled=busy||currentState!=='Idle'||button.dataset.connect!=='yes')}"
     "function lock(value){busy=value;updateControls()}"
