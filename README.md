@@ -4,7 +4,7 @@ Pico W firmware that exposes a TinyUSB composite USB device containing a
 boot-protocol HID keyboard and a USB CDC serial port. It discovers a Bluetooth
 Classic keyboard, opens its HID Control and Interrupt channels, requests Boot
 Protocol, and forwards eight-byte boot-keyboard input reports to USB. Wi-Fi is
-not enabled.
+enabled as a password-protected configuration access point.
 
 ## Build
 
@@ -21,6 +21,38 @@ On a Linux USB host, `tools/smoke_test.py` records the CDC log and USB keyboard
 input events together. It automatically creates timestamped logs and reports
 whether connect, input, disconnect, and reconnect were observed. See
 [`tools/README.md`](tools/README.md) for setup and execution instructions.
+
+## Configuration HTTP API
+
+The firmware starts a WPA2 configuration access point alongside Bluetooth:
+
+- SSID: `PicoW-Keyboard-Setup`
+- Password: `pico-keyboard`
+- URL: `http://192.168.4.1`
+
+The built-in DHCP server assigns the connecting PC or phone an address. The
+current API endpoints are:
+
+```text
+GET  /api/status
+POST /api/scan
+POST /api/connect?address=XX:XX:XX:XX:XX:XX
+POST /api/disconnect
+POST /api/reconnect
+POST /api/forget
+```
+
+For example:
+
+```bash
+curl http://192.168.4.1/api/status
+curl -X POST http://192.168.4.1/api/scan
+curl -X POST 'http://192.168.4.1/api/connect?address=XX:XX:XX:XX:XX:XX'
+```
+
+Action endpoints return HTTP `202` after the request is queued. Poll
+`/api/status` to observe the resulting asynchronous state change. The browser
+UI at `/` is tracked separately and is not implemented yet.
 
 ## Host tests
 
@@ -65,8 +97,8 @@ releases. `keyboard_demo_task()` is kept in `usb/` and only validates this API.
 
 Bluetooth Boot Keyboard reports are forwarded as complete modifier plus six-key
 USB reports. USB keyboard LED state is returned over the Bluetooth HID Control
-channel as a Boot Output Report. BTstack is driven by `bluetooth_task()` through the Pico W
-asynchronous context. Generic HID Report Protocol descriptors are not parsed;
+channel as a Boot Output Report. BTstack and lwIP are driven cooperatively by
+`bluetooth_task()` through the Pico W asynchronous poll context. Generic HID Report Protocol descriptors are not parsed;
 the current implementation intentionally supports Boot Protocol keyboards.
 
 ## Bluetooth module
