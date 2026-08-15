@@ -12,6 +12,7 @@
 #include "hid_boot_report.h"
 #include "hid_channels.h"
 #include "hid_report_descriptor.h"
+#include "hid_report_map.h"
 #include "sdp_parser.h"
 
 const char *bd_addr_to_str(const uint8_t address[6]) {
@@ -493,6 +494,263 @@ static void test_hid_report_descriptor(void) {
     assert(!hid_report_descriptor_parse(NULL, 0).valid);
 }
 
+static void test_hid_report_map(void) {
+    const uint8_t boot_keyboard[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0xe0, 0x29, 0xe7, 0x15, 0x00, 0x25, 0x01,
+        0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x75, 0x08,
+        0x95, 0x01, 0x81, 0x01, 0x19, 0x00, 0x29, 0x65,
+        0x25, 0x65, 0x95, 0x06, 0x81, 0x00, 0xc0,
+    };
+    hid_report_map_t map;
+    assert(hid_report_map_compile(&map, boot_keyboard,
+                                  sizeof(boot_keyboard)));
+    const uint8_t boot_report[] = {0x02, 0x00, 0x04, 0x05, 0, 0, 0, 0};
+    hid_report_translation_t result;
+    assert(hid_report_map_translate(&map, boot_report, sizeof(boot_report),
+                                    &result));
+    assert(result.keyboard_present && result.modifier == 0x02);
+    assert(result.keycodes[0] == 0x04 && result.keycodes[1] == 0x05);
+    assert(!result.consumer_present && !result.keyboard_rollover);
+
+    const uint8_t rollover_report[] = {0, 0, 1, 1, 1, 1, 1, 1};
+    assert(hid_report_map_translate(&map, rollover_report,
+                                    sizeof(rollover_report), &result));
+    assert(result.keyboard_present && result.keyboard_rollover);
+    uint8_t post_fail_report[] = {0, 0, 2, 2, 2, 2, 2, 2};
+    assert(hid_report_map_translate(&map, post_fail_report,
+                                    sizeof(post_fail_report), &result));
+    assert(result.keyboard_rollover);
+
+    const uint8_t report_ids[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x85, 0x01,
+        0x05, 0x07, 0x19, 0x04, 0x29, 0x0f, 0x75, 0x01,
+        0x95, 0x0c, 0x81, 0x02, 0xc0,
+        0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x85, 0x02,
+        0x19, 0x00, 0x2a, 0xff, 0x03, 0x75, 0x10, 0x95,
+        0x01, 0x81, 0x00, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, report_ids, sizeof(report_ids)));
+    const uint8_t nkro_report[] = {0x01, 0x01, 0x08};
+    assert(hid_report_map_translate(&map, nkro_report, sizeof(nkro_report),
+                                    &result));
+    assert(result.keyboard_present && result.keycodes[0] == 0x04);
+    assert(result.keycodes[1] == 0x0f && !result.consumer_present);
+
+    const uint8_t consumer_report[] = {0x02, 0xe9, 0x00};
+    assert(hid_report_map_translate(&map, consumer_report,
+                                    sizeof(consumer_report), &result));
+    assert(result.consumer_present && result.consumer_usage == 0x00e9);
+    assert(!result.keyboard_present);
+
+    const uint8_t consumer_release[] = {0x02, 0x00, 0x00};
+    assert(hid_report_map_translate(&map, consumer_release,
+                                    sizeof(consumer_release), &result));
+    assert(result.consumer_present && result.consumer_usage == 0);
+
+    const uint8_t unknown_report[] = {0x03, 0x00};
+    assert(!hid_report_map_translate(&map, unknown_report,
+                                     sizeof(unknown_report), &result));
+
+    const uint8_t mixed_modifier_usages[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x09, 0xe0, 0x19, 0xe1, 0x29, 0xe7, 0x75, 0x01,
+        0x95, 0x08, 0x81, 0x02, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, mixed_modifier_usages,
+                                  sizeof(mixed_modifier_usages)));
+    const uint8_t modifiers[] = {0x03};
+    assert(hid_report_map_translate(&map, modifiers, sizeof(modifiers),
+                                    &result));
+    assert(result.modifier == 0x03);
+
+    const uint8_t unrelated_range_before_modifiers[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x19, 0x01,
+        0x29, 0x02, 0x05, 0x07, 0x19, 0xe0, 0x29, 0xe1,
+        0x75, 0x01, 0x95, 0x04, 0x81, 0x02, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, unrelated_range_before_modifiers,
+                                  sizeof(unrelated_range_before_modifiers)));
+    const uint8_t shifted_modifiers[] = {0x0c};
+    assert(hid_report_map_translate(&map, shifted_modifiers,
+                                    sizeof(shifted_modifiers), &result));
+    assert(result.modifier == 0x03);
+
+    const uint8_t repeated_variable_usage[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x09, 0xe0, 0x75, 0x01, 0x95, 0x02, 0x81, 0x02,
+        0xc0,
+    };
+    assert(hid_report_map_compile(&map, repeated_variable_usage,
+                                  sizeof(repeated_variable_usage)));
+    const uint8_t second_control_bit[] = {0x02};
+    assert(hid_report_map_translate(&map, second_control_bit,
+                                    sizeof(second_control_bit), &result));
+    assert(result.modifier == 0x01);
+
+    const uint8_t explicit_consumer_array[] = {
+        0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x09, 0xe9,
+        0x09, 0xea, 0x15, 0x01, 0x25, 0x02, 0x75, 0x10,
+        0x95, 0x01, 0x81, 0x00, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, explicit_consumer_array,
+                                  sizeof(explicit_consumer_array)));
+    const uint8_t volume_down[] = {0x02, 0x00};
+    assert(hid_report_map_translate(&map, volume_down, sizeof(volume_down),
+                                    &result));
+    assert(result.consumer_present && result.consumer_usage == 0x00ea);
+
+    const uint8_t negative_consumer_selector[] = {
+        0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x09, 0xe9,
+        0x09, 0xea, 0x15, 0xff, 0x25, 0x00, 0x75, 0x08,
+        0x95, 0x01, 0x81, 0x00, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, negative_consumer_selector,
+                                  sizeof(negative_consumer_selector)));
+    const uint8_t negative_selector[] = {0xff};
+    assert(hid_report_map_translate(&map, negative_selector,
+                                    sizeof(negative_selector), &result));
+    assert(result.consumer_usage == 0x00e9);
+
+    const uint8_t negative_16bit_consumer_selector[] = {
+        0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x09, 0xe9,
+        0x09, 0xea, 0x16, 0xff, 0xff, 0x26, 0x00, 0x00,
+        0x75, 0x10, 0x95, 0x01, 0x81, 0x00, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, negative_16bit_consumer_selector,
+                                  sizeof(negative_16bit_consumer_selector)));
+    const uint8_t negative_16bit_selector[] = {0xff, 0xff};
+    assert(hid_report_map_translate(&map, negative_16bit_selector,
+                                    sizeof(negative_16bit_selector), &result));
+    assert(result.consumer_usage == 0x00e9);
+
+    const uint8_t multi_slot_consumer[] = {
+        0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x19, 0x00,
+        0x29, 0xea, 0x15, 0x00, 0x26, 0xea, 0x00, 0x75,
+        0x10, 0x95, 0x02, 0x81, 0x00, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, multi_slot_consumer,
+                                  sizeof(multi_slot_consumer)));
+    const uint8_t active_then_empty[] = {0xe9, 0x00, 0x00, 0x00};
+    assert(hid_report_map_translate(&map, active_then_empty,
+                                    sizeof(active_then_empty), &result));
+    assert(result.consumer_usage == 0x00e9);
+
+    const uint8_t delimited_nkro[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0x04, 0x29, 0x0f, 0xa9, 0x01, 0x19, 0x10,
+        0x29, 0x1b, 0xa9, 0x00, 0x75, 0x01, 0x95, 0x0c,
+        0x81, 0x02, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, delimited_nkro,
+                                  sizeof(delimited_nkro)));
+    const uint8_t first_nkro_key[] = {0x01, 0x00};
+    assert(hid_report_map_translate(&map, first_nkro_key,
+                                    sizeof(first_nkro_key), &result));
+    assert(result.keycodes[0] == 0x04);
+
+    const uint8_t multiple_usage_ranges[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0x04, 0x29, 0x05, 0x19, 0x10, 0x29, 0x11,
+        0x75, 0x01, 0x95, 0x04, 0x81, 0x02, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, multiple_usage_ranges,
+                                  sizeof(multiple_usage_ranges)));
+    const uint8_t disjoint_keys[] = {0x09};
+    assert(hid_report_map_translate(&map, disjoint_keys,
+                                    sizeof(disjoint_keys), &result));
+    assert(result.keycodes[0] == 0x04 && result.keycodes[1] == 0x11);
+
+    const uint8_t full_nkro[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0x00, 0x29, 0x67, 0x75, 0x01, 0x95, 0x68,
+        0x81, 0x02, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, full_nkro, sizeof(full_nkro)));
+
+    const uint8_t large_vendor_field[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x06, 0x00,
+        0xff, 0x19, 0x00, 0x29, 0xff, 0x75, 0x01, 0x96,
+        0x01, 0x01, 0x81, 0x02, 0x05, 0x07, 0x19, 0x04,
+        0x29, 0x0f, 0x95, 0x0c, 0x81, 0x02, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, large_vendor_field,
+                                  sizeof(large_vendor_field)));
+
+    const uint8_t large_vendor_array[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x06, 0x00,
+        0xff, 0x19, 0x00, 0x29, 0xff, 0x75, 0x01, 0x96,
+        0x01, 0x01, 0x81, 0x00, 0x05, 0x07, 0x19, 0x04,
+        0x29, 0x0f, 0x95, 0x0c, 0x81, 0x02, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, large_vendor_array,
+                                  sizeof(large_vendor_array)));
+
+    const uint8_t mixed_large_variable[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x19, 0x00,
+        0x29, 0xff, 0x05, 0x07, 0x09, 0x04, 0x75, 0x01,
+        0x96, 0x01, 0x01, 0x81, 0x02, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, mixed_large_variable,
+                                  sizeof(mixed_large_variable)));
+    uint8_t mixed_large_report[33] = {0};
+    mixed_large_report[32] = 0x01;
+    assert(hid_report_map_translate(&map, mixed_large_report,
+                                    sizeof(mixed_large_report), &result));
+    assert(result.keycodes[0] == 0x04);
+
+    const uint8_t clamped_array_selector[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0x04, 0x29, 0x05, 0x15, 0x00, 0x25, 0x00,
+        0x75, 0x08, 0x95, 0x01, 0x81, 0x00, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, clamped_array_selector,
+                                  sizeof(clamped_array_selector)));
+    const uint8_t out_of_logical_range[] = {0x01};
+    assert(hid_report_map_translate(&map, out_of_logical_range,
+                                    sizeof(out_of_logical_range), &result));
+    assert(result.keyboard_present && result.keycodes[0] == 0);
+
+    const uint8_t unsigned_logical_maximum[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0x04, 0x29, 0x05, 0x15, 0x00, 0x25, 0xff,
+        0x75, 0x08, 0x95, 0x01, 0x81, 0x00, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, unsigned_logical_maximum,
+                                  sizeof(unsigned_logical_maximum)));
+    const uint8_t first_unsigned_selector[] = {0x00};
+    assert(hid_report_map_translate(&map, first_unsigned_selector,
+                                    sizeof(first_unsigned_selector), &result));
+    assert(result.keycodes[0] == 0x04);
+
+    const uint8_t buffered_then_keyboard[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x09, 0xe0, 0x75, 0x08, 0x95, 0x01, 0x82, 0x02,
+        0x01, 0x09, 0xe1, 0x75, 0x01, 0x81, 0x02, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, buffered_then_keyboard,
+                                  sizeof(buffered_then_keyboard)));
+    const uint8_t buffered_report[] = {0x01, 0x01};
+    assert(hid_report_map_translate(&map, buffered_report,
+                                    sizeof(buffered_report), &result));
+    assert(result.modifier == 0x02);
+
+    const uint8_t overflowing_dimensions[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0x04, 0x29, 0x05, 0x75, 0x02, 0x97, 0x00,
+        0x00, 0x00, 0x80, 0x81, 0x02, 0xc0,
+    };
+    assert(!hid_report_map_compile(&map, overflowing_dimensions,
+                                   sizeof(overflowing_dimensions)));
+    const uint8_t zero_width_huge_array[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x75, 0x00,
+        0x97, 0xff, 0xff, 0xff, 0xff, 0x81, 0x00, 0xc0,
+    };
+    assert(!hid_report_map_compile(&map, zero_width_huge_array,
+                                   sizeof(zero_width_huge_array)));
+    assert(!hid_report_map_compile(NULL, report_ids, sizeof(report_ids)));
+}
+
 static void test_control_commands(void) {
     control_command_t command;
 
@@ -621,6 +879,7 @@ int main(void) {
     test_hid_channel_state();
     test_sdp_parser();
     test_hid_report_descriptor();
+    test_hid_report_map();
     test_control_commands();
     test_control_request_queue();
     test_control_snapshot_json();
