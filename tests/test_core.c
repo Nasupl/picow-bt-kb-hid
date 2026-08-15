@@ -12,6 +12,7 @@
 #include "hid_boot_report.h"
 #include "hid_channels.h"
 #include "hid_report_descriptor.h"
+#include "hid_report_map.h"
 #include "sdp_parser.h"
 
 const char *bd_addr_to_str(const uint8_t address[6]) {
@@ -493,6 +494,57 @@ static void test_hid_report_descriptor(void) {
     assert(!hid_report_descriptor_parse(NULL, 0).valid);
 }
 
+static void test_hid_report_map(void) {
+    const uint8_t boot_keyboard[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0xe0, 0x29, 0xe7, 0x15, 0x00, 0x25, 0x01,
+        0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x75, 0x08,
+        0x95, 0x01, 0x81, 0x01, 0x19, 0x00, 0x29, 0x65,
+        0x95, 0x06, 0x81, 0x00, 0xc0,
+    };
+    hid_report_map_t map;
+    assert(hid_report_map_compile(&map, boot_keyboard,
+                                  sizeof(boot_keyboard)));
+    const uint8_t boot_report[] = {0x02, 0x00, 0x04, 0x05, 0, 0, 0, 0};
+    hid_report_translation_t result;
+    assert(hid_report_map_translate(&map, boot_report, sizeof(boot_report),
+                                    &result));
+    assert(result.keyboard_present && result.modifier == 0x02);
+    assert(result.keycodes[0] == 0x04 && result.keycodes[1] == 0x05);
+    assert(!result.consumer_present && !result.keyboard_rollover);
+
+    const uint8_t report_ids[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x85, 0x01,
+        0x05, 0x07, 0x19, 0x04, 0x29, 0x0f, 0x75, 0x01,
+        0x95, 0x0c, 0x81, 0x02, 0xc0,
+        0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x85, 0x02,
+        0x19, 0x00, 0x2a, 0xff, 0x03, 0x75, 0x10, 0x95,
+        0x01, 0x81, 0x00, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, report_ids, sizeof(report_ids)));
+    const uint8_t nkro_report[] = {0x01, 0x01, 0x08};
+    assert(hid_report_map_translate(&map, nkro_report, sizeof(nkro_report),
+                                    &result));
+    assert(result.keyboard_present && result.keycodes[0] == 0x04);
+    assert(result.keycodes[1] == 0x0f && !result.consumer_present);
+
+    const uint8_t consumer_report[] = {0x02, 0xe9, 0x00};
+    assert(hid_report_map_translate(&map, consumer_report,
+                                    sizeof(consumer_report), &result));
+    assert(result.consumer_present && result.consumer_usage == 0x00e9);
+    assert(!result.keyboard_present);
+
+    const uint8_t consumer_release[] = {0x02, 0x00, 0x00};
+    assert(hid_report_map_translate(&map, consumer_release,
+                                    sizeof(consumer_release), &result));
+    assert(result.consumer_present && result.consumer_usage == 0);
+
+    const uint8_t unknown_report[] = {0x03, 0x00};
+    assert(!hid_report_map_translate(&map, unknown_report,
+                                     sizeof(unknown_report), &result));
+    assert(!hid_report_map_compile(NULL, report_ids, sizeof(report_ids)));
+}
+
 static void test_control_commands(void) {
     control_command_t command;
 
@@ -621,6 +673,7 @@ int main(void) {
     test_hid_channel_state();
     test_sdp_parser();
     test_hid_report_descriptor();
+    test_hid_report_map();
     test_control_commands();
     test_control_request_queue();
     test_control_snapshot_json();

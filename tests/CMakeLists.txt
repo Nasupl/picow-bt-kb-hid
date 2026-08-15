@@ -11,6 +11,7 @@ add_executable(core_tests
     ../bt/bt_state.c
     ../bt/hid_channels.c
     ../bt/hid_report_descriptor.c
+    ../bt/hid_report_map.c
     ../bt/sdp_parser.c
     ../bt/hid_boot_report.c
     ../web/control_json.c

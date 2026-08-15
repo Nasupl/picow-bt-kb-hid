@@ -50,6 +50,7 @@ add_executable(pico_bt_keyboard
     bt/hid_boot_report.c
     bt/hid_channels.c
     bt/hid_report_descriptor.c
+    bt/hid_report_map.c
     bt/sdp_parser.c
     usb/hid_keyboard.c
     usb/usb_serial.c
