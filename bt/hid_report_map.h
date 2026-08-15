@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define HID_REPORT_MAP_MAX_FIELDS 96
+#define HID_REPORT_MAP_MAX_FIELDS 256
 
 typedef enum {
     HID_REPORT_FIELD_KEYBOARD_VARIABLE,
