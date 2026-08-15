@@ -52,6 +52,7 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
     global_state_t stack[HID_GLOBAL_STACK_DEPTH];
     size_t stack_depth = 0;
     uint32_t local_usage = 0;
+    uint32_t local_usage_page = 0;
     bool have_local_usage = false;
     bool local_usage_extended = false;
     unsigned collection_depth = 0;
@@ -102,6 +103,7 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
         } else if (type == HID_TYPE_LOCAL && tag == HID_LOCAL_USAGE) {
             if (!scalar_size_valid(data_size)) return invalid_descriptor();
             local_usage = value;
+            local_usage_page = global.usage_page;
             have_local_usage = true;
             local_usage_extended = data_size == 4;
         } else if (type == HID_TYPE_MAIN) {
@@ -115,7 +117,7 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
                 if (value == HID_COLLECTION_APPLICATION && have_local_usage) {
                     uint32_t usage_page = local_usage_extended
                                               ? local_usage >> 16
-                                              : global.usage_page;
+                                              : local_usage_page;
                     uint32_t usage = local_usage & 0xffff;
                     if (usage_page == HID_USAGE_PAGE_GENERIC_DESKTOP &&
                         usage == HID_USAGE_KEYBOARD) {
@@ -135,7 +137,7 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
                 if (consumer_depth == collection_depth) consumer_depth = 0;
                 --collection_depth;
             } else if (tag == HID_TAG_INPUT && keyboard_depth != 0 &&
-                       scalar_size_valid(data_size) && (value & 1u) == 0 &&
+                       scalar_size_valid(data_size) && (value & 3u) == 2u &&
                        global.usage_page == HID_USAGE_PAGE_KEYBOARD &&
                        global.report_size == 1 && global.report_count > 8) {
                 info.has_nkro_keyboard = true;
