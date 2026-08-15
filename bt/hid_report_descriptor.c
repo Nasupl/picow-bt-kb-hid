@@ -14,6 +14,9 @@
 #define HID_GLOBAL_PUSH 10
 #define HID_GLOBAL_POP 11
 #define HID_LOCAL_USAGE 0
+#define HID_LOCAL_USAGE_MINIMUM 1
+#define HID_LOCAL_USAGE_MAXIMUM 2
+#define HID_LOCAL_DELIMITER 10
 #define HID_COLLECTION_APPLICATION 1
 #define HID_USAGE_PAGE_GENERIC_DESKTOP 0x01
 #define HID_USAGE_PAGE_KEYBOARD 0x07
@@ -43,6 +46,11 @@ static bool scalar_size_valid(size_t size) {
     return size == 1 || size == 2 || size == 4;
 }
 
+static uint32_t qualified_usage_page(uint32_t value, size_t size,
+                                     uint32_t global_page) {
+    return size == 4 ? value >> 16 : global_page;
+}
+
 hid_report_descriptor_info_t hid_report_descriptor_parse(
     const uint8_t *descriptor, size_t length) {
     hid_report_descriptor_info_t info = {0};
@@ -55,6 +63,9 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
     uint32_t local_usage_page = 0;
     bool have_local_usage = false;
     bool local_usage_extended = false;
+    bool local_keyboard_usage = false;
+    bool local_consumer_usage = false;
+    bool delimiter_open = false;
     unsigned collection_depth = 0;
     unsigned keyboard_depth = 0;
     unsigned consumer_depth = 0;
@@ -100,13 +111,30 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
                 }
                 global = stack[--stack_depth];
             }
-        } else if (type == HID_TYPE_LOCAL && tag == HID_LOCAL_USAGE) {
+        } else if (type == HID_TYPE_LOCAL &&
+                   (tag == HID_LOCAL_USAGE ||
+                    tag == HID_LOCAL_USAGE_MINIMUM ||
+                    tag == HID_LOCAL_USAGE_MAXIMUM)) {
             if (!scalar_size_valid(data_size)) return invalid_descriptor();
-            local_usage = value;
-            local_usage_page = global.usage_page;
-            have_local_usage = true;
-            local_usage_extended = data_size == 4;
+            uint32_t usage_page = qualified_usage_page(
+                value, data_size, global.usage_page);
+            local_keyboard_usage |= usage_page == HID_USAGE_PAGE_KEYBOARD;
+            local_consumer_usage |= usage_page == HID_USAGE_PAGE_CONSUMER;
+            if (tag == HID_LOCAL_USAGE) {
+                local_usage = value;
+                local_usage_page = global.usage_page;
+                have_local_usage = true;
+                local_usage_extended = data_size == 4;
+            }
+        } else if (type == HID_TYPE_LOCAL && tag == HID_LOCAL_DELIMITER) {
+            if (data_size != 1 || (value != 0 && value != 1) ||
+                (value == 1 && delimiter_open) ||
+                (value == 0 && !delimiter_open)) {
+                return invalid_descriptor();
+            }
+            delimiter_open = value == 1;
         } else if (type == HID_TYPE_MAIN) {
+            if (delimiter_open) return invalid_descriptor();
             if ((tag == HID_TAG_INPUT || tag == HID_TAG_OUTPUT ||
                  tag == HID_TAG_FEATURE) && !scalar_size_valid(data_size)) {
                 return invalid_descriptor();
@@ -138,15 +166,21 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
                 --collection_depth;
             } else if (tag == HID_TAG_INPUT && keyboard_depth != 0 &&
                        scalar_size_valid(data_size) && (value & 3u) == 2u &&
-                       global.usage_page == HID_USAGE_PAGE_KEYBOARD &&
+                       local_keyboard_usage &&
                        global.report_size == 1 && global.report_count > 8) {
                 info.has_nkro_keyboard = true;
             }
+            if (tag == HID_TAG_INPUT && scalar_size_valid(data_size) &&
+                (value & 1u) == 0 && local_consumer_usage) {
+                info.has_consumer_control = true;
+            }
             have_local_usage = false;
             local_usage_extended = false;
+            local_keyboard_usage = false;
+            local_consumer_usage = false;
         }
     }
-    if (collection_depth != 0 || stack_depth != 0) {
+    if (collection_depth != 0 || stack_depth != 0 || delimiter_open) {
         return invalid_descriptor();
     }
     info.valid = true;

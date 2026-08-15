@@ -255,7 +255,8 @@ static void test_sdp_parser(void) {
 static void test_hid_report_descriptor(void) {
     const uint8_t nkro[] = {
         0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
-        0x75, 0x01, 0x95, 0x68, 0x85, 0x01, 0x81, 0x02, 0xc0,
+        0x19, 0x00, 0x29, 0x67, 0x75, 0x01, 0x95, 0x68,
+        0x85, 0x01, 0x81, 0x02, 0xc0,
     };
     hid_report_descriptor_info_t info =
         hid_report_descriptor_parse(nkro, sizeof(nkro));
@@ -310,6 +311,29 @@ static void test_hid_report_descriptor(void) {
     info = hid_report_descriptor_parse(data_array_bitmap,
                                        sizeof(data_array_bitmap));
     assert(info.valid && info.has_keyboard && !info.has_nkro_keyboard);
+
+    const uint8_t nkro_page_changed_before_input[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0x04, 0x29, 0x68, 0x05, 0xff, 0x75, 0x01,
+        0x95, 0x65, 0x81, 0x02, 0xc0,
+    };
+    info = hid_report_descriptor_parse(nkro_page_changed_before_input,
+                                       sizeof(nkro_page_changed_before_input));
+    assert(info.valid && info.has_nkro_keyboard);
+
+    const uint8_t consumer_inside_keyboard[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x0c,
+        0x09, 0xe9, 0x75, 0x01, 0x95, 0x01, 0x81, 0x02, 0xc0,
+    };
+    info = hid_report_descriptor_parse(consumer_inside_keyboard,
+                                       sizeof(consumer_inside_keyboard));
+    assert(info.valid && info.has_keyboard && info.has_consumer_control);
+
+    const uint8_t unclosed_delimiter[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa9, 0x01, 0xa1, 0x01, 0xc0,
+    };
+    assert(!hid_report_descriptor_parse(unclosed_delimiter,
+                                        sizeof(unclosed_delimiter)).valid);
 
     const uint8_t malformed_end_collection[] = {
         0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0xc1, 0x00,
