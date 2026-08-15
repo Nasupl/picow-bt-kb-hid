@@ -14,25 +14,55 @@
 #define SDP_ATTR_HID_DESCRIPTOR_LIST 0x0206
 
 #define DE_TYPE_UINT 1
+#define DE_TYPE_INT 2
 #define DE_TYPE_UUID 3
 #define DE_TYPE_STRING 4
+#define DE_TYPE_BOOL 5
 #define DE_TYPE_SEQUENCE 6
+#define DE_TYPE_ALTERNATIVE 7
+#define DE_TYPE_URL 8
 
 typedef struct {
     uint8_t type;
+    uint8_t size_index;
     const uint8_t *data;
     uint16_t data_size;
     uint16_t total_size;
 } DataElement;
 
+static bool size_index_valid(uint8_t type, uint8_t size_index) {
+    switch (type) {
+        case 0:
+            return size_index == 0;
+        case DE_TYPE_UINT:
+        case DE_TYPE_INT:
+            return size_index <= 4;
+        case DE_TYPE_UUID:
+            return size_index == 1 || size_index == 2 || size_index == 4;
+        case DE_TYPE_STRING:
+        case DE_TYPE_SEQUENCE:
+        case DE_TYPE_ALTERNATIVE:
+        case DE_TYPE_URL:
+            return size_index >= 5;
+        case DE_TYPE_BOOL:
+            return size_index == 0;
+        default:
+            return false;
+    }
+}
+
 static bool read_element(const uint8_t *buffer, uint16_t available,
                          DataElement *element) {
     if (buffer == NULL || element == NULL || available == 0) return false;
 
+    uint8_t type = buffer[0] >> 3;
     uint8_t size_index = buffer[0] & 7;
+    if (!size_index_valid(type, size_index)) return false;
     uint16_t header_size = 1;
     uint32_t data_size;
-    if (size_index <= 4) {
+    if (type == 0) {
+        data_size = 0;
+    } else if (size_index <= 4) {
         data_size = 1u << size_index;
     } else {
         uint8_t length_bytes = (uint8_t) (1u << (size_index - 5));
@@ -46,7 +76,8 @@ static bool read_element(const uint8_t *buffer, uint16_t available,
     if (data_size > UINT16_MAX ||
         header_size + data_size > available) return false;
 
-    element->type = buffer[0] >> 3;
+    element->type = type;
+    element->size_index = size_index;
     element->data = &buffer[header_size];
     element->data_size = (uint16_t) data_size;
     element->total_size = (uint16_t) (header_size + data_size);
@@ -85,46 +116,41 @@ static bool validate_element_tree(const uint8_t *buffer, uint16_t size,
 }
 
 static bool find_report_descriptor(const uint8_t *buffer, uint16_t size,
-                                   unsigned depth, const uint8_t **descriptor,
+                                   const uint8_t **descriptor,
                                    uint16_t *descriptor_size) {
-    if (depth > 4 || !validate_element_tree(buffer, size, depth)) return false;
+    if (!validate_element_tree(buffer, size, 0)) return false;
     DataElement root;
     if (!read_element(buffer, size, &root) || root.type != DE_TYPE_SEQUENCE ||
         root.total_size != size) {
         return false;
     }
+    bool found = false;
     uint16_t offset = 0;
-    DataElement first = {0};
-    if (read_element(root.data, root.data_size, &first) &&
-        first.type == DE_TYPE_UINT && first.data_size == 1 &&
-        first.data[0] == 0x22) {
-        offset = first.total_size;
-        DataElement report;
-        if (offset < root.data_size &&
-            read_element(&root.data[offset],
-                         (uint16_t) (root.data_size - offset), &report) &&
-            report.type == DE_TYPE_STRING &&
-            offset + report.total_size == root.data_size) {
-            *descriptor = report.data;
-            *descriptor_size = report.data_size;
-            return true;
-        }
-    }
-    offset = 0;
     while (offset < root.data_size) {
-        DataElement child;
+        DataElement child, kind, value;
         if (!read_element(&root.data[offset],
                           (uint16_t) (root.data_size - offset), &child)) {
             return false;
         }
-        if (child.type == DE_TYPE_SEQUENCE &&
-            find_report_descriptor(&root.data[offset], child.total_size,
-                                   depth + 1, descriptor, descriptor_size)) {
-            return true;
+        if (child.type != DE_TYPE_SEQUENCE ||
+            !read_element(child.data, child.data_size, &kind) ||
+            kind.type != DE_TYPE_UINT || kind.data_size != 1 ||
+            kind.total_size >= child.data_size ||
+            !read_element(&child.data[kind.total_size],
+                          (uint16_t) (child.data_size - kind.total_size),
+                          &value) || value.type != DE_TYPE_STRING ||
+            kind.total_size + value.total_size != child.data_size) {
+            return false;
+        }
+        if (kind.data[0] == 0x22) {
+            if (found) return false;
+            *descriptor = value.data;
+            *descriptor_size = value.data_size;
+            found = true;
         }
         offset = (uint16_t) (offset + child.total_size);
     }
-    return false;
+    return found;
 }
 
 static bool find_l2cap_psm(const uint8_t *buffer, uint16_t size,
@@ -180,7 +206,7 @@ static void parse_attribute(Device *device, uint16_t attribute_id,
         device->report_uses_ids = false;
         const uint8_t *descriptor;
         uint16_t descriptor_size;
-        if (!find_report_descriptor(buffer, length, 0, &descriptor,
+        if (!find_report_descriptor(buffer, length, &descriptor,
                                     &descriptor_size)) {
             usb_serial_printf("[BT] HID Report Descriptor malformed\r\n");
             return;

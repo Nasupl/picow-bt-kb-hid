@@ -65,6 +65,10 @@ typedef struct {
     bool first_is_consumer_application;
 } local_usage_set_t;
 
+// SDP parsing runs synchronously on the single BTstack event context. Keep the
+// relatively large usage workspace out of the RP2040's 2 KiB main stack.
+static local_usage_set_t usage_sets[HID_LOCAL_USAGE_SET_COUNT];
+
 static void append_usage(local_usage_set_t *set, uint32_t page,
                          uint32_t usage) {
     if (!set->has_usage) {
@@ -120,7 +124,6 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
     global_state_t global = {0};
     global_state_t stack[HID_GLOBAL_STACK_DEPTH];
     size_t stack_depth = 0;
-    local_usage_set_t usage_sets[HID_LOCAL_USAGE_SET_COUNT];
     reset_usage_sets(usage_sets);
     uint8_t usage_set_count = 1;
     uint8_t current_usage_set = 0;
@@ -255,10 +258,13 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
                             global.report_count) {
                         info.has_nkro_keyboard = true;
                     }
+                    bool consumer_is_consumed =
+                        (value & 2u) == 0 ||
+                        usage_sets[i].first_consumer_position <
+                            global.report_count;
                     if ((value & 1u) == 0 &&
                         usage_sets[i].has_consumer_usage &&
-                        usage_sets[i].first_consumer_position <
-                            global.report_count) {
+                        consumer_is_consumed) {
                         info.has_consumer_control = true;
                     }
                 }
