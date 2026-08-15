@@ -67,7 +67,8 @@ static bool find_report_descriptor(const uint8_t *buffer, uint16_t size,
                                    uint16_t *descriptor_size) {
     if (depth > 4) return false;
     DataElement root;
-    if (!read_element(buffer, size, &root) || root.type != DE_TYPE_SEQUENCE) {
+    if (!read_element(buffer, size, &root) || root.type != DE_TYPE_SEQUENCE ||
+        root.total_size != size) {
         return false;
     }
     uint16_t offset = 0;
@@ -80,7 +81,8 @@ static bool find_report_descriptor(const uint8_t *buffer, uint16_t size,
         if (offset < root.data_size &&
             read_element(&root.data[offset],
                          (uint16_t) (root.data_size - offset), &report) &&
-            report.type == DE_TYPE_STRING) {
+            report.type == DE_TYPE_STRING &&
+            offset + report.total_size == root.data_size) {
             *descriptor = report.data;
             *descriptor_size = report.data_size;
             return true;

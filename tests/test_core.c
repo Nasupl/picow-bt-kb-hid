@@ -245,6 +245,15 @@ static void test_sdp_parser(void) {
            !device.report_descriptor_valid && !device.report_has_keyboard &&
            !device.report_has_consumer_control && !device.report_uses_ids);
 
+    const uint8_t trailing_descriptor_data[] = {
+        0x35, 0x16, 0x35, 0x14, 0x08, 0x22, 0x25, 0x0f,
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0xc0, 0x00,
+    };
+    feed_sdp(&parser, &device, 0x0206, trailing_descriptor_data,
+             sizeof(trailing_descriptor_data));
+    assert(!device.report_descriptor_valid && !device.report_has_keyboard);
+
     sdp_parser_reset(&parser);
     assert(parser.completed_attribute_count == 0);
     uint8_t malformed[] = {0x35, 0xff};
@@ -334,6 +343,30 @@ static void test_hid_report_descriptor(void) {
     };
     assert(!hid_report_descriptor_parse(unclosed_delimiter,
                                         sizeof(unclosed_delimiter)).valid);
+
+    const uint8_t incomplete_usage_range[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0x04, 0x75, 0x01, 0x95, 0x10, 0x81, 0x02, 0xc0,
+    };
+    assert(!hid_report_descriptor_parse(incomplete_usage_range,
+                                        sizeof(incomplete_usage_range)).valid);
+
+    const uint8_t delimited_application_usage[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa9, 0x01, 0x09,
+        0x02, 0xa9, 0x00, 0xa1, 0x01, 0xc0,
+    };
+    info = hid_report_descriptor_parse(delimited_application_usage,
+                                       sizeof(delimited_application_usage));
+    assert(info.valid && info.has_keyboard);
+
+    const uint8_t modifier_only_bitmap[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0xe0, 0x29, 0xe7, 0x75, 0x01, 0x95, 0x10,
+        0x81, 0x02, 0xc0,
+    };
+    info = hid_report_descriptor_parse(modifier_only_bitmap,
+                                       sizeof(modifier_only_bitmap));
+    assert(info.valid && info.has_keyboard && !info.has_nkro_keyboard);
 
     const uint8_t malformed_end_collection[] = {
         0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0xc1, 0x00,

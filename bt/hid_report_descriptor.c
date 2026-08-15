@@ -1,5 +1,7 @@
 #include "hid_report_descriptor.h"
 
+#include <string.h>
+
 #define HID_TYPE_MAIN 0
 #define HID_TYPE_GLOBAL 1
 #define HID_TYPE_LOCAL 2
@@ -51,6 +53,17 @@ static uint32_t qualified_usage_page(uint32_t value, size_t size,
     return size == 4 ? value >> 16 : global_page;
 }
 
+static void mark_keyboard_usage(uint8_t usages[32], uint32_t usage,
+                                uint16_t *count) {
+    if (usage > 255) return;
+    uint8_t mask = (uint8_t) (1u << (usage & 7u));
+    uint8_t *entry = &usages[usage >> 3];
+    if ((*entry & mask) == 0) {
+        *entry |= mask;
+        ++*count;
+    }
+}
+
 hid_report_descriptor_info_t hid_report_descriptor_parse(
     const uint8_t *descriptor, size_t length) {
     hid_report_descriptor_info_t info = {0};
@@ -59,16 +72,17 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
     global_state_t global = {0};
     global_state_t stack[HID_GLOBAL_STACK_DEPTH];
     size_t stack_depth = 0;
-    uint32_t local_usage = 0;
-    uint32_t local_usage_page = 0;
-    bool have_local_usage = false;
-    bool local_usage_extended = false;
-    bool local_keyboard_usage = false;
+    uint8_t local_keyboard_usages[32] = {0};
+    uint16_t local_keyboard_usage_count = 0;
     bool local_consumer_usage = false;
+    bool local_keyboard_application = false;
+    bool local_consumer_application = false;
+    bool usage_minimum_pending = false;
+    uint32_t usage_minimum_page = 0;
+    uint32_t usage_minimum = 0;
     bool delimiter_open = false;
     unsigned collection_depth = 0;
     unsigned keyboard_depth = 0;
-    unsigned consumer_depth = 0;
 
     for (size_t offset = 0; offset < length;) {
         uint8_t prefix = descriptor[offset++];
@@ -118,13 +132,50 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
             if (!scalar_size_valid(data_size)) return invalid_descriptor();
             uint32_t usage_page = qualified_usage_page(
                 value, data_size, global.usage_page);
-            local_keyboard_usage |= usage_page == HID_USAGE_PAGE_KEYBOARD;
-            local_consumer_usage |= usage_page == HID_USAGE_PAGE_CONSUMER;
+            uint32_t usage = value & 0xffffu;
             if (tag == HID_LOCAL_USAGE) {
-                local_usage = value;
-                local_usage_page = global.usage_page;
-                have_local_usage = true;
-                local_usage_extended = data_size == 4;
+                if (usage_page == HID_USAGE_PAGE_KEYBOARD) {
+                    mark_keyboard_usage(local_keyboard_usages, usage,
+                                        &local_keyboard_usage_count);
+                }
+                local_consumer_usage |= usage_page == HID_USAGE_PAGE_CONSUMER;
+                local_keyboard_application |=
+                    usage_page == HID_USAGE_PAGE_GENERIC_DESKTOP &&
+                    usage == HID_USAGE_KEYBOARD;
+                local_consumer_application |=
+                    usage_page == HID_USAGE_PAGE_CONSUMER &&
+                    usage == HID_USAGE_CONSUMER_CONTROL;
+            } else if (tag == HID_LOCAL_USAGE_MINIMUM) {
+                if (usage_minimum_pending) return invalid_descriptor();
+                usage_minimum_pending = true;
+                usage_minimum_page = usage_page;
+                usage_minimum = usage;
+            } else {
+                if (!usage_minimum_pending ||
+                    usage_page != usage_minimum_page ||
+                    usage < usage_minimum) {
+                    return invalid_descriptor();
+                }
+                if (usage_page == HID_USAGE_PAGE_KEYBOARD) {
+                    uint32_t last = usage < 255 ? usage : 255;
+                    if (usage_minimum <= last) {
+                        for (uint32_t item = usage_minimum; item <= last;
+                             ++item) {
+                            mark_keyboard_usage(local_keyboard_usages, item,
+                                                &local_keyboard_usage_count);
+                        }
+                    }
+                }
+                local_consumer_usage |= usage_page == HID_USAGE_PAGE_CONSUMER;
+                local_keyboard_application |=
+                    usage_page == HID_USAGE_PAGE_GENERIC_DESKTOP &&
+                    usage_minimum <= HID_USAGE_KEYBOARD &&
+                    usage >= HID_USAGE_KEYBOARD;
+                local_consumer_application |=
+                    usage_page == HID_USAGE_PAGE_CONSUMER &&
+                    usage_minimum <= HID_USAGE_CONSUMER_CONTROL &&
+                    usage >= HID_USAGE_CONSUMER_CONTROL;
+                usage_minimum_pending = false;
             }
         } else if (type == HID_TYPE_LOCAL && tag == HID_LOCAL_DELIMITER) {
             if (data_size != 1 || (value != 0 && value != 1) ||
@@ -134,7 +185,9 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
             }
             delimiter_open = value == 1;
         } else if (type == HID_TYPE_MAIN) {
-            if (delimiter_open) return invalid_descriptor();
+            if (delimiter_open || usage_minimum_pending) {
+                return invalid_descriptor();
+            }
             if ((tag == HID_TAG_INPUT || tag == HID_TAG_OUTPUT ||
                  tag == HID_TAG_FEATURE) && !scalar_size_valid(data_size)) {
                 return invalid_descriptor();
@@ -142,19 +195,13 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
             if (tag == HID_TAG_COLLECTION) {
                 if (data_size != 1) return invalid_descriptor();
                 ++collection_depth;
-                if (value == HID_COLLECTION_APPLICATION && have_local_usage) {
-                    uint32_t usage_page = local_usage_extended
-                                              ? local_usage >> 16
-                                              : local_usage_page;
-                    uint32_t usage = local_usage & 0xffff;
-                    if (usage_page == HID_USAGE_PAGE_GENERIC_DESKTOP &&
-                        usage == HID_USAGE_KEYBOARD) {
+                if (value == HID_COLLECTION_APPLICATION) {
+                    if (local_keyboard_application) {
                         info.has_keyboard = true;
                         keyboard_depth = collection_depth;
-                    } else if (usage_page == HID_USAGE_PAGE_CONSUMER &&
-                               usage == HID_USAGE_CONSUMER_CONTROL) {
+                    }
+                    if (local_consumer_application) {
                         info.has_consumer_control = true;
-                        consumer_depth = collection_depth;
                     }
                 }
             } else if (tag == 12) {
@@ -162,22 +209,22 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
                     return invalid_descriptor();
                 }
                 if (keyboard_depth == collection_depth) keyboard_depth = 0;
-                if (consumer_depth == collection_depth) consumer_depth = 0;
                 --collection_depth;
             } else if (tag == HID_TAG_INPUT && keyboard_depth != 0 &&
                        scalar_size_valid(data_size) && (value & 3u) == 2u &&
-                       local_keyboard_usage &&
-                       global.report_size == 1 && global.report_count > 8) {
+                       global.report_size == 1 && global.report_count > 8 &&
+                       local_keyboard_usage_count >= global.report_count) {
                 info.has_nkro_keyboard = true;
             }
             if (tag == HID_TAG_INPUT && scalar_size_valid(data_size) &&
                 (value & 1u) == 0 && local_consumer_usage) {
                 info.has_consumer_control = true;
             }
-            have_local_usage = false;
-            local_usage_extended = false;
-            local_keyboard_usage = false;
+            memset(local_keyboard_usages, 0, sizeof(local_keyboard_usages));
+            local_keyboard_usage_count = 0;
             local_consumer_usage = false;
+            local_keyboard_application = false;
+            local_consumer_application = false;
         }
     }
     if (collection_depth != 0 || stack_depth != 0 || delimiter_open) {
