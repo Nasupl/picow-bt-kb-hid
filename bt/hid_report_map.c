@@ -147,9 +147,7 @@ bool hid_report_map_compile(hid_report_map_t *map, const uint8_t *descriptor,
             } else if (tag == HID_LOCAL_USAGE_MAXIMUM) {
                 maximum = usage;
                 if (have_minimum && minimum.page == maximum.page &&
-                    minimum.usage <= maximum.usage &&
-                    (minimum.page == HID_USAGE_PAGE_KEYBOARD ||
-                     minimum.page == HID_USAGE_PAGE_CONSUMER)) {
+                    minimum.usage <= maximum.usage) {
                     for (uint32_t item = minimum.usage;
                          item <= maximum.usage; ++item) {
                         if (usage_count == HID_LOCAL_USAGE_COUNT) return false;
@@ -191,6 +189,7 @@ bool hid_report_map_compile(hid_report_map_t *map, const uint8_t *descriptor,
                         if (!relevant) break;
                         map_usage_t usage = {0};
                         if (i < usage_count) usage = usages[i];
+                        else if (usage_count != 0) usage = usages[usage_count - 1];
                         hid_report_field_kind_t kind;
                         if (usage.page == HID_USAGE_PAGE_KEYBOARD) {
                             kind = HID_REPORT_FIELD_KEYBOARD_VARIABLE;
@@ -269,6 +268,15 @@ static bool read_bits(const uint8_t *data, size_t length, uint16_t offset,
     return true;
 }
 
+static int32_t decode_selector(uint16_t value, uint8_t bit_size,
+                               int32_t logical_minimum) {
+    if (logical_minimum < 0 && bit_size < 16 &&
+        (value & (1u << (bit_size - 1))) != 0) {
+        return (int32_t) value | -(1 << bit_size);
+    }
+    return value;
+}
+
 static void add_key(hid_report_translation_t *translation, uint16_t usage) {
     if (usage >= 1 && usage <= 3) {
         translation->keyboard_present = true;
@@ -316,11 +324,8 @@ bool hid_report_map_translate(const hid_report_map_t *map,
             if (value != 0) add_key(translation, field->usage);
         } else if (field->kind == HID_REPORT_FIELD_KEYBOARD_ARRAY) {
             translation->keyboard_present = true;
-            int32_t selector = value;
-            if (field->selector_minimum < 0 && field->bit_size < 16 &&
-                (value & (1u << (field->bit_size - 1))) != 0) {
-                selector |= -(1 << field->bit_size);
-            }
+            int32_t selector = decode_selector(
+                value, field->bit_size, field->selector_minimum);
             if (selector >= field->selector_minimum &&
                 selector <= field->selector_maximum) {
                 add_key(translation, (uint16_t) (
@@ -334,12 +339,16 @@ bool hid_report_map_translate(const hid_report_map_t *map,
             }
         } else {
             translation->consumer_present = true;
-            int32_t selector = value;
+            int32_t selector = decode_selector(
+                value, field->bit_size, field->selector_minimum);
             if (selector >= field->selector_minimum &&
                 selector <= field->selector_maximum) {
-                translation->consumer_usage = (uint16_t) (
+                uint16_t mapped_usage = (uint16_t) (
                     field->usage_minimum +
                     (selector - field->selector_minimum));
+                if (mapped_usage != 0) {
+                    translation->consumer_usage = mapped_usage;
+                }
             }
         }
     }
