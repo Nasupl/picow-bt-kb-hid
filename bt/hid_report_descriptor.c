@@ -57,8 +57,9 @@ static uint32_t qualified_usage_page(uint32_t value, size_t size,
 
 typedef struct {
     uint16_t keyboard_positions[256];
-    uint16_t position;
-    uint16_t first_consumer_position;
+    uint32_t position;
+    uint32_t first_consumer_position;
+    bool has_consumer_usage;
     bool has_usage;
     bool first_is_keyboard_application;
     bool first_is_consumer_application;
@@ -75,8 +76,8 @@ static void append_usage(local_usage_set_t *set, uint32_t page,
             page == HID_USAGE_PAGE_CONSUMER &&
             usage == HID_USAGE_CONSUMER_CONTROL;
     }
-    if (page == HID_USAGE_PAGE_CONSUMER &&
-        set->first_consumer_position == UINT16_MAX) {
+    if (page == HID_USAGE_PAGE_CONSUMER && !set->has_consumer_usage) {
+        set->has_consumer_usage = true;
         set->first_consumer_position = set->position;
     }
     if (page == HID_USAGE_PAGE_KEYBOARD && usage <= 255 &&
@@ -86,7 +87,7 @@ static void append_usage(local_usage_set_t *set, uint32_t page,
             *first_position = set->position;
         }
     }
-    if (set->position != UINT16_MAX) ++set->position;
+    if (set->position != UINT32_MAX) ++set->position;
 }
 
 static uint16_t keyboard_usage_count(const local_usage_set_t *set,
@@ -108,7 +109,6 @@ static void reset_usage_sets(local_usage_set_t sets[HID_LOCAL_USAGE_SET_COUNT]) 
     for (size_t i = 0; i < HID_LOCAL_USAGE_SET_COUNT; ++i) {
         memset(sets[i].keyboard_positions, 0xff,
                sizeof(sets[i].keyboard_positions));
-        sets[i].first_consumer_position = UINT16_MAX;
     }
 }
 
@@ -194,13 +194,7 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
                     usage < usage_minimum) {
                     return invalid_descriptor();
                 }
-                uint32_t last = usage;
-                uint32_t remaining = UINT16_MAX -
-                    usage_sets[current_usage_set].position;
-                if (last - usage_minimum > remaining) {
-                    last = usage_minimum + remaining;
-                }
-                for (uint32_t item = usage_minimum; item <= last; ++item) {
+                for (uint32_t item = usage_minimum; item <= usage; ++item) {
                     append_usage(&usage_sets[current_usage_set], usage_page,
                                  item);
                 }
@@ -262,7 +256,7 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
                         info.has_nkro_keyboard = true;
                     }
                     if ((value & 1u) == 0 &&
-                        usage_sets[i].first_consumer_position != UINT16_MAX &&
+                        usage_sets[i].has_consumer_usage &&
                         usage_sets[i].first_consumer_position <
                             global.report_count) {
                         info.has_consumer_control = true;

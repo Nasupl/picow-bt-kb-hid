@@ -415,6 +415,16 @@ static void test_hid_report_descriptor(void) {
                                        sizeof(excess_consumer_usage));
     assert(info.valid && info.has_keyboard && !info.has_consumer_control);
 
+    const uint8_t consumer_at_position_65535[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x06, 0x00,
+        0xff, 0x1a, 0x00, 0x00, 0x2a, 0xfe, 0xff, 0x05,
+        0x0c, 0x09, 0xe9, 0x75, 0x01, 0x97, 0x00, 0x00,
+        0x01, 0x00, 0x81, 0x02, 0xc0,
+    };
+    info = hid_report_descriptor_parse(consumer_at_position_65535,
+                                       sizeof(consumer_at_position_65535));
+    assert(info.valid && info.has_keyboard && info.has_consumer_control);
+
     const uint8_t malformed_end_collection[] = {
         0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0xc1, 0x00,
     };
