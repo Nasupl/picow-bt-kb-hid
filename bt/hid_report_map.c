@@ -10,6 +10,7 @@
 #define HID_MAIN_INPUT 8
 #define HID_GLOBAL_USAGE_PAGE 0
 #define HID_GLOBAL_LOGICAL_MINIMUM 1
+#define HID_GLOBAL_LOGICAL_MAXIMUM 2
 #define HID_GLOBAL_REPORT_SIZE 7
 #define HID_GLOBAL_REPORT_ID 8
 #define HID_GLOBAL_REPORT_COUNT 9
@@ -29,6 +30,8 @@ typedef struct {
     uint32_t report_size;
     uint32_t report_count;
     int32_t logical_minimum;
+    int32_t logical_maximum;
+    bool has_logical_maximum;
     uint8_t report_id;
 } map_global_t;
 
@@ -118,6 +121,11 @@ bool hid_report_map_compile(hid_report_map_t *map, const uint8_t *descriptor,
                 global.logical_minimum = signed_item_value(
                     &descriptor[offset - data_size], data_size);
             }
+            else if (tag == HID_GLOBAL_LOGICAL_MAXIMUM) {
+                global.logical_maximum = signed_item_value(
+                    &descriptor[offset - data_size], data_size);
+                global.has_logical_maximum = true;
+            }
             else if (tag == HID_GLOBAL_REPORT_SIZE) global.report_size = value;
             else if (tag == HID_GLOBAL_REPORT_COUNT) global.report_count = value;
             else if (tag == HID_GLOBAL_REPORT_ID) {
@@ -174,7 +182,9 @@ bool hid_report_map_compile(hid_report_map_t *map, const uint8_t *descriptor,
             if (total_bits > (uint32_t) UINT16_MAX - *bit_offset) return false;
             bool constant = (value & 1u) != 0;
             bool variable = (value & 2u) != 0;
-            if (!constant) {
+            bool buffered_bytes = (value & 0x100u) != 0;
+            if (!constant && !buffered_bytes) {
+                if (global.report_size == 0) return false;
                 if (variable) {
                     uint64_t emitted_count = 0;
                     size_t declared_count = usage_count;
@@ -221,11 +231,31 @@ bool hid_report_map_compile(hid_report_map_t *map, const uint8_t *descriptor,
                                        usage.usage, 0, 0, 0, 0)) return false;
                     }
                 } else {
-                    if (usage_count != 0 &&
-                        global.report_count > HID_REPORT_MAP_MAX_FIELDS) {
+                    size_t relevant_run_count = 0;
+                    for (size_t u = 0; u < usage_count;) {
+                        bool relevant =
+                            usages[u].page == HID_USAGE_PAGE_KEYBOARD ||
+                            usages[u].page == HID_USAGE_PAGE_CONSUMER;
+                        size_t run_end = u;
+                        while (run_end + 1 < usage_count &&
+                               usages[run_end + 1].page == usages[u].page &&
+                               usages[run_end + 1].usage ==
+                                   usages[run_end].usage + 1) {
+                            ++run_end;
+                        }
+                        relevant_run_count += relevant;
+                        u = run_end + 1;
+                    }
+                    uint64_t emitted_count =
+                        (uint64_t) relevant_run_count * global.report_count;
+                    if (emitted_count >
+                        HID_REPORT_MAP_MAX_FIELDS - map->field_count) {
                         return false;
                     }
-                    for (uint32_t i = 0; i < global.report_count; ++i) {
+                    uint32_t slots_to_scan = relevant_run_count == 0
+                                                 ? 0
+                                                 : global.report_count;
+                    for (uint32_t i = 0; i < slots_to_scan; ++i) {
                         uint16_t field_offset = (uint16_t) (
                             *bit_offset + i * global.report_size);
                         for (size_t u = 0; u < usage_count;) {
@@ -248,12 +278,21 @@ bool hid_report_map_compile(hid_report_map_t *map, const uint8_t *descriptor,
                             }
                             int32_t selector_minimum =
                                 global.logical_minimum + (int32_t) u;
+                            int32_t selector_maximum = selector_minimum +
+                                (int32_t) (run_end - u);
+                            if (global.has_logical_maximum &&
+                                selector_maximum > global.logical_maximum) {
+                                selector_maximum = global.logical_maximum;
+                            }
+                            if (selector_maximum < selector_minimum) {
+                                u = run_end + 1;
+                                continue;
+                            }
                             if (!add_field(map, kind, &global,
                                            field_offset, 0, usages[u].usage,
                                            usages[run_end].usage,
                                            selector_minimum,
-                                           selector_minimum +
-                                               (int32_t) (run_end - u))) {
+                                           selector_maximum)) {
                                 return false;
                             }
                             u = run_end + 1;
