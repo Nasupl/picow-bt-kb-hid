@@ -9,6 +9,7 @@
 #define HID_TYPE_LOCAL 2
 #define HID_MAIN_INPUT 8
 #define HID_GLOBAL_USAGE_PAGE 0
+#define HID_GLOBAL_LOGICAL_MINIMUM 1
 #define HID_GLOBAL_REPORT_SIZE 7
 #define HID_GLOBAL_REPORT_ID 8
 #define HID_GLOBAL_REPORT_COUNT 9
@@ -21,12 +22,13 @@
 #define HID_USAGE_PAGE_KEYBOARD 0x07
 #define HID_USAGE_PAGE_CONSUMER 0x0c
 #define HID_GLOBAL_STACK_DEPTH 4
-#define HID_LOCAL_USAGE_COUNT 32
+#define HID_LOCAL_USAGE_COUNT 1024
 
 typedef struct {
     uint32_t usage_page;
     uint32_t report_size;
     uint32_t report_count;
+    int32_t logical_minimum;
     uint8_t report_id;
 } map_global_t;
 
@@ -35,15 +37,27 @@ typedef struct {
     uint16_t usage;
 } map_usage_t;
 
+// Compilation runs synchronously in the BTstack context. Keep the expanded
+// usage list in BSS rather than consuming the RP2040 main stack.
+static map_usage_t local_usages[HID_LOCAL_USAGE_COUNT];
+
 static uint32_t item_value(const uint8_t *data, size_t size) {
     uint32_t value = 0;
     for (size_t i = 0; i < size; ++i) value |= (uint32_t) data[i] << (8 * i);
     return value;
 }
 
+static int32_t signed_item_value(const uint8_t *data, size_t size) {
+    uint32_t value = item_value(data, size);
+    if (size == 1) return (int8_t) value;
+    if (size == 2) return (int16_t) value;
+    return (int32_t) value;
+}
+
 static bool add_field(hid_report_map_t *map, hid_report_field_kind_t kind,
                       const map_global_t *global, uint16_t bit_offset,
-                      uint16_t usage, uint16_t minimum, uint16_t maximum) {
+                      uint16_t usage, uint16_t minimum, uint16_t maximum,
+                      int32_t selector_minimum, int32_t selector_maximum) {
     if (map->field_count == HID_REPORT_MAP_MAX_FIELDS ||
         global->report_size == 0 || global->report_size > 16) {
         return false;
@@ -56,6 +70,8 @@ static bool add_field(hid_report_map_t *map, hid_report_field_kind_t kind,
     field->usage = usage;
     field->usage_minimum = minimum;
     field->usage_maximum = maximum;
+    field->selector_minimum = selector_minimum;
+    field->selector_maximum = selector_maximum;
     return true;
 }
 
@@ -74,7 +90,7 @@ bool hid_report_map_compile(hid_report_map_t *map, const uint8_t *descriptor,
     map_global_t global = {0};
     map_global_t stack[HID_GLOBAL_STACK_DEPTH];
     size_t stack_depth = 0;
-    map_usage_t usages[HID_LOCAL_USAGE_COUNT];
+    map_usage_t *usages = local_usages;
     size_t usage_count = 0;
     bool have_minimum = false;
     bool ignore_alternative_usages = false;
@@ -98,6 +114,10 @@ bool hid_report_map_compile(hid_report_map_t *map, const uint8_t *descriptor,
 
         if (type == HID_TYPE_GLOBAL) {
             if (tag == HID_GLOBAL_USAGE_PAGE) global.usage_page = value;
+            else if (tag == HID_GLOBAL_LOGICAL_MINIMUM) {
+                global.logical_minimum = signed_item_value(
+                    &descriptor[offset - data_size], data_size);
+            }
             else if (tag == HID_GLOBAL_REPORT_SIZE) global.report_size = value;
             else if (tag == HID_GLOBAL_REPORT_COUNT) global.report_count = value;
             else if (tag == HID_GLOBAL_REPORT_ID) {
@@ -126,6 +146,20 @@ bool hid_report_map_compile(hid_report_map_t *map, const uint8_t *descriptor,
                 have_minimum = true;
             } else if (tag == HID_LOCAL_USAGE_MAXIMUM) {
                 maximum = usage;
+                if (have_minimum && minimum.page == maximum.page &&
+                    minimum.usage <= maximum.usage &&
+                    (minimum.page == HID_USAGE_PAGE_KEYBOARD ||
+                     minimum.page == HID_USAGE_PAGE_CONSUMER)) {
+                    for (uint32_t item = minimum.usage;
+                         item <= maximum.usage; ++item) {
+                        if (usage_count == HID_LOCAL_USAGE_COUNT) return false;
+                        usages[usage_count++] = (map_usage_t) {
+                            .page = minimum.page,
+                            .usage = (uint16_t) item,
+                        };
+                    }
+                }
+                have_minimum = false;
             }
             continue;
         }
@@ -143,20 +177,20 @@ bool hid_report_map_compile(hid_report_map_t *map, const uint8_t *descriptor,
             bool constant = (value & 1u) != 0;
             bool variable = (value & 2u) != 0;
             if (!constant) {
-                if (global.report_count > HID_REPORT_MAP_MAX_FIELDS) {
-                    return false;
-                }
                 if (variable) {
+                    bool relevant = false;
+                    for (size_t i = 0; i < usage_count; ++i) {
+                        relevant |= usages[i].page == HID_USAGE_PAGE_KEYBOARD ||
+                                    usages[i].page == HID_USAGE_PAGE_CONSUMER;
+                    }
+                    if (relevant &&
+                        global.report_count > HID_REPORT_MAP_MAX_FIELDS) {
+                        return false;
+                    }
                     for (uint32_t i = 0; i < global.report_count; ++i) {
+                        if (!relevant) break;
                         map_usage_t usage = {0};
                         if (i < usage_count) usage = usages[i];
-                        else if (have_minimum && minimum.page == maximum.page &&
-                                 minimum.usage + (i - usage_count) <=
-                                     maximum.usage) {
-                            usage.page = minimum.page;
-                            usage.usage = (uint16_t) (
-                                minimum.usage + (i - usage_count));
-                        }
                         hid_report_field_kind_t kind;
                         if (usage.page == HID_USAGE_PAGE_KEYBOARD) {
                             kind = HID_REPORT_FIELD_KEYBOARD_VARIABLE;
@@ -167,13 +201,17 @@ bool hid_report_map_compile(hid_report_map_t *map, const uint8_t *descriptor,
                         }
                         if (!add_field(map, kind, &global,
                                        (uint16_t) (*bit_offset + i * global.report_size),
-                                       usage.usage, 0, 0)) return false;
+                                       usage.usage, 0, 0, 0, 0)) return false;
                     }
                 } else {
+                    if (usage_count != 0 &&
+                        global.report_count > HID_REPORT_MAP_MAX_FIELDS) {
+                        return false;
+                    }
                     for (uint32_t i = 0; i < global.report_count; ++i) {
                         uint16_t field_offset = (uint16_t) (
                             *bit_offset + i * global.report_size);
-                        for (size_t u = 0; u < usage_count; ++u) {
+                        for (size_t u = 0; u < usage_count;) {
                             hid_report_field_kind_t kind;
                             if (usages[u].page == HID_USAGE_PAGE_KEYBOARD) {
                                 kind = HID_REPORT_FIELD_KEYBOARD_ARRAY;
@@ -181,26 +219,27 @@ bool hid_report_map_compile(hid_report_map_t *map, const uint8_t *descriptor,
                                        HID_USAGE_PAGE_CONSUMER) {
                                 kind = HID_REPORT_FIELD_CONSUMER_ARRAY;
                             } else {
+                                ++u;
                                 continue;
                             }
+                            size_t run_end = u;
+                            while (run_end + 1 < usage_count &&
+                                   usages[run_end + 1].page == usages[u].page &&
+                                   usages[run_end + 1].usage ==
+                                       usages[run_end].usage + 1) {
+                                ++run_end;
+                            }
+                            int32_t selector_minimum =
+                                global.logical_minimum + (int32_t) u;
                             if (!add_field(map, kind, &global,
                                            field_offset, 0, usages[u].usage,
-                                           usages[u].usage)) return false;
-                        }
-                        if (have_minimum) {
-                            hid_report_field_kind_t kind;
-                            if (minimum.page == HID_USAGE_PAGE_KEYBOARD) {
-                                kind = HID_REPORT_FIELD_KEYBOARD_ARRAY;
-                            } else if (minimum.page ==
-                                       HID_USAGE_PAGE_CONSUMER) {
-                                kind = HID_REPORT_FIELD_CONSUMER_ARRAY;
-                            } else {
-                                continue;
-                            }
-                            if (!add_field(map, kind, &global, field_offset, 0,
-                                           minimum.usage, maximum.usage)) {
+                                           usages[run_end].usage,
+                                           selector_minimum,
+                                           selector_minimum +
+                                               (int32_t) (run_end - u))) {
                                 return false;
                             }
+                            u = run_end + 1;
                         }
                     }
                 }
@@ -231,7 +270,7 @@ static bool read_bits(const uint8_t *data, size_t length, uint16_t offset,
 }
 
 static void add_key(hid_report_translation_t *translation, uint16_t usage) {
-    if (usage == 1) {
+    if (usage >= 1 && usage <= 3) {
         translation->keyboard_present = true;
         translation->keyboard_rollover = true;
         return;
@@ -277,8 +316,16 @@ bool hid_report_map_translate(const hid_report_map_t *map,
             if (value != 0) add_key(translation, field->usage);
         } else if (field->kind == HID_REPORT_FIELD_KEYBOARD_ARRAY) {
             translation->keyboard_present = true;
-            if (value >= field->usage_minimum && value <= field->usage_maximum) {
-                add_key(translation, value);
+            int32_t selector = value;
+            if (field->selector_minimum < 0 && field->bit_size < 16 &&
+                (value & (1u << (field->bit_size - 1))) != 0) {
+                selector |= -(1 << field->bit_size);
+            }
+            if (selector >= field->selector_minimum &&
+                selector <= field->selector_maximum) {
+                add_key(translation, (uint16_t) (
+                    field->usage_minimum +
+                    (selector - field->selector_minimum)));
             }
         } else if (field->kind == HID_REPORT_FIELD_CONSUMER_VARIABLE) {
             translation->consumer_present = true;
@@ -287,9 +334,12 @@ bool hid_report_map_translate(const hid_report_map_t *map,
             }
         } else {
             translation->consumer_present = true;
-            if (value >= field->usage_minimum &&
-                value <= field->usage_maximum && value != 0) {
-                translation->consumer_usage = value;
+            int32_t selector = value;
+            if (selector >= field->selector_minimum &&
+                selector <= field->selector_maximum) {
+                translation->consumer_usage = (uint16_t) (
+                    field->usage_minimum +
+                    (selector - field->selector_minimum));
             }
         }
     }

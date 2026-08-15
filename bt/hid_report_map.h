@@ -22,6 +22,8 @@ typedef struct {
     uint16_t usage;
     uint16_t usage_minimum;
     uint16_t usage_maximum;
+    int32_t selector_minimum;
+    int32_t selector_maximum;
 } hid_report_field_t;
 
 typedef struct {

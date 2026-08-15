@@ -517,6 +517,10 @@ static void test_hid_report_map(void) {
     assert(hid_report_map_translate(&map, rollover_report,
                                     sizeof(rollover_report), &result));
     assert(result.keyboard_present && result.keyboard_rollover);
+    uint8_t post_fail_report[] = {0, 0, 2, 2, 2, 2, 2, 2};
+    assert(hid_report_map_translate(&map, post_fail_report,
+                                    sizeof(post_fail_report), &result));
+    assert(result.keyboard_rollover);
 
     const uint8_t report_ids[] = {
         0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x85, 0x01,
@@ -562,12 +566,12 @@ static void test_hid_report_map(void) {
 
     const uint8_t explicit_consumer_array[] = {
         0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x09, 0xe9,
-        0x09, 0xea, 0x75, 0x10, 0x95, 0x01, 0x81, 0x00,
-        0xc0,
+        0x09, 0xea, 0x15, 0x01, 0x25, 0x02, 0x75, 0x10,
+        0x95, 0x01, 0x81, 0x00, 0xc0,
     };
     assert(hid_report_map_compile(&map, explicit_consumer_array,
                                   sizeof(explicit_consumer_array)));
-    const uint8_t volume_down[] = {0xea, 0x00};
+    const uint8_t volume_down[] = {0x02, 0x00};
     assert(hid_report_map_translate(&map, volume_down, sizeof(volume_down),
                                     &result));
     assert(result.consumer_present && result.consumer_usage == 0x00ea);
@@ -585,12 +589,33 @@ static void test_hid_report_map(void) {
                                     sizeof(first_nkro_key), &result));
     assert(result.keycodes[0] == 0x04);
 
+    const uint8_t multiple_usage_ranges[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0x04, 0x29, 0x05, 0x19, 0x10, 0x29, 0x11,
+        0x75, 0x01, 0x95, 0x04, 0x81, 0x02, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, multiple_usage_ranges,
+                                  sizeof(multiple_usage_ranges)));
+    const uint8_t disjoint_keys[] = {0x09};
+    assert(hid_report_map_translate(&map, disjoint_keys,
+                                    sizeof(disjoint_keys), &result));
+    assert(result.keycodes[0] == 0x04 && result.keycodes[1] == 0x11);
+
     const uint8_t full_nkro[] = {
         0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
         0x19, 0x00, 0x29, 0x67, 0x75, 0x01, 0x95, 0x68,
         0x81, 0x02, 0xc0,
     };
     assert(hid_report_map_compile(&map, full_nkro, sizeof(full_nkro)));
+
+    const uint8_t large_vendor_field[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x06, 0x00,
+        0xff, 0x19, 0x00, 0x29, 0xff, 0x75, 0x01, 0x96,
+        0x01, 0x01, 0x81, 0x02, 0x05, 0x07, 0x19, 0x04,
+        0x29, 0x0f, 0x95, 0x0c, 0x81, 0x02, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, large_vendor_field,
+                                  sizeof(large_vendor_field)));
 
     const uint8_t overflowing_dimensions[] = {
         0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
