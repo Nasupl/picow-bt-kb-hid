@@ -126,6 +126,7 @@ static bool find_report_descriptor(const uint8_t *buffer, uint16_t size,
     }
     bool found = false;
     uint16_t offset = 0;
+    unsigned entry_index = 0;
     while (offset < root.data_size) {
         DataElement child, kind, value;
         if (!read_element(&root.data[offset],
@@ -142,13 +143,17 @@ static bool find_report_descriptor(const uint8_t *buffer, uint16_t size,
             kind.total_size + value.total_size != child.data_size) {
             return false;
         }
-        if (kind.data[0] == 0x22) {
-            if (found) return false;
+        if ((entry_index == 0 && kind.data[0] != 0x22) ||
+            (entry_index != 0 && kind.data[0] == 0x22)) {
+            return false;
+        }
+        if (entry_index == 0) {
             *descriptor = value.data;
             *descriptor_size = value.data_size;
             found = true;
         }
         offset = (uint16_t) (offset + child.total_size);
+        ++entry_index;
     }
     return found;
 }

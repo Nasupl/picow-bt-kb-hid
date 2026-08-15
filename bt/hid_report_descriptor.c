@@ -57,6 +57,7 @@ static uint32_t qualified_usage_page(uint32_t value, size_t size,
 
 typedef struct {
     uint16_t keyboard_positions[256];
+    uint8_t non_key_positions[32];
     uint32_t position;
     uint32_t first_consumer_position;
     bool has_consumer_usage;
@@ -80,18 +81,35 @@ static void append_usage(local_usage_set_t *set, uint32_t page,
             page == HID_USAGE_PAGE_CONSUMER &&
             usage == HID_USAGE_CONSUMER_CONTROL;
     }
-    if (page == HID_USAGE_PAGE_CONSUMER && !set->has_consumer_usage) {
+    if (page == HID_USAGE_PAGE_CONSUMER && usage != 0 &&
+        !set->has_consumer_usage) {
         set->has_consumer_usage = true;
         set->first_consumer_position = set->position;
     }
-    if (page == HID_USAGE_PAGE_KEYBOARD && usage <= 255 &&
+    if (page == HID_USAGE_PAGE_KEYBOARD && usage < 4 &&
         set->position < HID_USAGE_POSITION_LIMIT) {
+        set->non_key_positions[set->position >> 3] |=
+            (uint8_t) (1u << (set->position & 7u));
+    } else if (page == HID_USAGE_PAGE_KEYBOARD && usage <= 255 &&
+               set->position < HID_USAGE_POSITION_LIMIT) {
         uint16_t *first_position = &set->keyboard_positions[usage];
         if (*first_position == UINT16_MAX) {
             *first_position = set->position;
         }
     }
     if (set->position != UINT32_MAX) ++set->position;
+}
+
+static uint16_t non_key_position_count(const local_usage_set_t *set,
+                                       uint32_t report_count) {
+    uint16_t count = 0;
+    for (uint32_t position = 0; position < report_count; ++position) {
+        if (set->non_key_positions[position >> 3] &
+            (uint8_t) (1u << (position & 7u))) {
+            ++count;
+        }
+    }
+    return count;
 }
 
 static uint16_t keyboard_usage_count(const local_usage_set_t *set,
@@ -230,6 +248,11 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
             }
             if (tag == HID_TAG_COLLECTION) {
                 if (data_size != 1) return invalid_descriptor();
+                bool has_collection_usage = false;
+                for (uint8_t i = 0; i < usage_set_count; ++i) {
+                    has_collection_usage |= usage_sets[i].has_usage;
+                }
+                if (!has_collection_usage) return invalid_descriptor();
                 ++collection_depth;
                 if (value == HID_COLLECTION_APPLICATION) {
                     for (uint8_t i = 0; i < usage_set_count; ++i) {
@@ -250,11 +273,14 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
                 --collection_depth;
             } else if (tag == HID_TAG_INPUT && scalar_size_valid(data_size)) {
                 for (uint8_t i = 0; i < usage_set_count; ++i) {
+                    uint16_t key_count = keyboard_usage_count(
+                        &usage_sets[i], global.report_count);
                     if (keyboard_depth != 0 && (value & 3u) == 2u &&
                         global.report_size == 1 && global.report_count > 8 &&
                         global.report_count <= HID_USAGE_POSITION_LIMIT &&
-                        keyboard_usage_count(&usage_sets[i],
-                                             global.report_count) >=
+                        key_count > 8 &&
+                        key_count + non_key_position_count(
+                                        &usage_sets[i], global.report_count) >=
                             global.report_count) {
                         info.has_nkro_keyboard = true;
                     }

@@ -277,6 +277,16 @@ static void test_sdp_parser(void) {
              sizeof(extra_sequence_wrapper));
     assert(!device.report_descriptor_valid && !device.report_has_keyboard);
 
+    const uint8_t physical_descriptor_first[] = {
+        0x35, 0x1c, 0x35, 0x05, 0x08, 0x23, 0x25, 0x01,
+        0x00, 0x35, 0x13, 0x08, 0x22, 0x25, 0x0f, 0x05,
+        0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07, 0x75,
+        0x01, 0x95, 0x08, 0x81, 0x02, 0xc0,
+    };
+    feed_sdp(&parser, &device, 0x0206, physical_descriptor_first,
+             sizeof(physical_descriptor_first));
+    assert(!device.report_descriptor_valid && !device.report_has_keyboard);
+
     sdp_parser_feed(&parser, &device, 0x0206, 257, 0, 0x35);
     assert(device.report_descriptor_present &&
            device.report_descriptor_too_large &&
@@ -437,6 +447,27 @@ static void test_hid_report_descriptor(void) {
     info = hid_report_descriptor_parse(consumer_array_alternative,
                                        sizeof(consumer_array_alternative));
     assert(info.valid && info.has_keyboard && info.has_consumer_control);
+
+    const uint8_t unassigned_consumer_usage[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x0c,
+        0x09, 0x00, 0x75, 0x08, 0x95, 0x01, 0x81, 0x00, 0xc0,
+    };
+    info = hid_report_descriptor_parse(unassigned_consumer_usage,
+                                       sizeof(unassigned_consumer_usage));
+    assert(info.valid && info.has_keyboard && !info.has_consumer_control);
+
+    const uint8_t non_key_bitmap[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0x00, 0x29, 0x08, 0x75, 0x01, 0x95, 0x09,
+        0x81, 0x02, 0xc0,
+    };
+    info = hid_report_descriptor_parse(non_key_bitmap,
+                                       sizeof(non_key_bitmap));
+    assert(info.valid && info.has_keyboard && !info.has_nkro_keyboard);
+
+    const uint8_t collection_without_usage[] = {0xa1, 0x01, 0xc0};
+    assert(!hid_report_descriptor_parse(collection_without_usage,
+                                        sizeof(collection_without_usage)).valid);
 
     const uint8_t consumer_at_position_65535[] = {
         0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x06, 0x00,
