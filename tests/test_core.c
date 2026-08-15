@@ -711,6 +711,18 @@ static void test_hid_report_map(void) {
                                     sizeof(out_of_logical_range), &result));
     assert(result.keyboard_present && result.keycodes[0] == 0);
 
+    const uint8_t unsigned_logical_maximum[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0x04, 0x29, 0x05, 0x15, 0x00, 0x25, 0xff,
+        0x75, 0x08, 0x95, 0x01, 0x81, 0x00, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, unsigned_logical_maximum,
+                                  sizeof(unsigned_logical_maximum)));
+    const uint8_t first_unsigned_selector[] = {0x00};
+    assert(hid_report_map_translate(&map, first_unsigned_selector,
+                                    sizeof(first_unsigned_selector), &result));
+    assert(result.keycodes[0] == 0x04);
+
     const uint8_t buffered_then_keyboard[] = {
         0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
         0x09, 0xe0, 0x75, 0x08, 0x95, 0x01, 0x82, 0x02,

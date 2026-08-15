@@ -122,8 +122,16 @@ bool hid_report_map_compile(hid_report_map_t *map, const uint8_t *descriptor,
                     &descriptor[offset - data_size], data_size);
             }
             else if (tag == HID_GLOBAL_LOGICAL_MAXIMUM) {
-                global.logical_maximum = signed_item_value(
-                    &descriptor[offset - data_size], data_size);
+                if (global.logical_minimum < 0) {
+                    global.logical_maximum = signed_item_value(
+                        &descriptor[offset - data_size], data_size);
+                } else {
+                    uint32_t maximum = item_value(
+                        &descriptor[offset - data_size], data_size);
+                    global.logical_maximum = maximum > INT32_MAX
+                                                 ? INT32_MAX
+                                                 : (int32_t) maximum;
+                }
                 global.has_logical_maximum = true;
             }
             else if (tag == HID_GLOBAL_REPORT_SIZE) global.report_size = value;
