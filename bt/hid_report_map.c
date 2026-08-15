@@ -176,17 +176,35 @@ bool hid_report_map_compile(hid_report_map_t *map, const uint8_t *descriptor,
             bool variable = (value & 2u) != 0;
             if (!constant) {
                 if (variable) {
-                    bool relevant = false;
-                    for (size_t i = 0; i < usage_count; ++i) {
-                        relevant |= usages[i].page == HID_USAGE_PAGE_KEYBOARD ||
-                                    usages[i].page == HID_USAGE_PAGE_CONSUMER;
+                    uint64_t emitted_count = 0;
+                    size_t declared_count = usage_count;
+                    if (declared_count > global.report_count) {
+                        declared_count = global.report_count;
                     }
-                    if (relevant &&
-                        global.report_count > HID_REPORT_MAP_MAX_FIELDS) {
+                    for (size_t i = 0; i < declared_count; ++i) {
+                        emitted_count +=
+                            usages[i].page == HID_USAGE_PAGE_KEYBOARD ||
+                            usages[i].page == HID_USAGE_PAGE_CONSUMER;
+                    }
+                    bool repeated_relevant = usage_count != 0 &&
+                        (usages[usage_count - 1].page ==
+                             HID_USAGE_PAGE_KEYBOARD ||
+                         usages[usage_count - 1].page ==
+                             HID_USAGE_PAGE_CONSUMER);
+                    if (global.report_count > usage_count &&
+                        repeated_relevant) {
+                        emitted_count += global.report_count - usage_count;
+                    }
+                    if (emitted_count >
+                        HID_REPORT_MAP_MAX_FIELDS - map->field_count) {
                         return false;
                     }
-                    for (uint32_t i = 0; i < global.report_count; ++i) {
-                        if (!relevant) break;
+                    uint32_t positions_to_scan = global.report_count;
+                    if (global.report_count > usage_count &&
+                        !repeated_relevant) {
+                        positions_to_scan = (uint32_t) usage_count;
+                    }
+                    for (uint32_t i = 0; i < positions_to_scan; ++i) {
                         map_usage_t usage = {0};
                         if (i < usage_count) usage = usages[i];
                         else if (usage_count != 0) usage = usages[usage_count - 1];
@@ -270,7 +288,7 @@ static bool read_bits(const uint8_t *data, size_t length, uint16_t offset,
 
 static int32_t decode_selector(uint16_t value, uint8_t bit_size,
                                int32_t logical_minimum) {
-    if (logical_minimum < 0 && bit_size < 16 &&
+    if (logical_minimum < 0 && bit_size <= 16 &&
         (value & (1u << (bit_size - 1))) != 0) {
         return (int32_t) value | -(1 << bit_size);
     }

@@ -612,6 +612,18 @@ static void test_hid_report_map(void) {
                                     sizeof(negative_selector), &result));
     assert(result.consumer_usage == 0x00e9);
 
+    const uint8_t negative_16bit_consumer_selector[] = {
+        0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x09, 0xe9,
+        0x09, 0xea, 0x16, 0xff, 0xff, 0x26, 0x00, 0x00,
+        0x75, 0x10, 0x95, 0x01, 0x81, 0x00, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, negative_16bit_consumer_selector,
+                                  sizeof(negative_16bit_consumer_selector)));
+    const uint8_t negative_16bit_selector[] = {0xff, 0xff};
+    assert(hid_report_map_translate(&map, negative_16bit_selector,
+                                    sizeof(negative_16bit_selector), &result));
+    assert(result.consumer_usage == 0x00e9);
+
     const uint8_t multi_slot_consumer[] = {
         0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x19, 0x00,
         0x29, 0xea, 0x15, 0x00, 0x26, 0xea, 0x00, 0x75,
@@ -664,6 +676,19 @@ static void test_hid_report_map(void) {
     };
     assert(hid_report_map_compile(&map, large_vendor_field,
                                   sizeof(large_vendor_field)));
+
+    const uint8_t mixed_large_variable[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x19, 0x00,
+        0x29, 0xff, 0x05, 0x07, 0x09, 0x04, 0x75, 0x01,
+        0x96, 0x01, 0x01, 0x81, 0x02, 0xc0,
+    };
+    assert(hid_report_map_compile(&map, mixed_large_variable,
+                                  sizeof(mixed_large_variable)));
+    uint8_t mixed_large_report[33] = {0};
+    mixed_large_report[32] = 0x01;
+    assert(hid_report_map_translate(&map, mixed_large_report,
+                                    sizeof(mixed_large_report), &result));
+    assert(result.keycodes[0] == 0x04);
 
     const uint8_t overflowing_dimensions[] = {
         0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
