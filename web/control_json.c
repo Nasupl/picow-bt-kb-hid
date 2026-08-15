@@ -95,6 +95,7 @@ bool control_json_write_snapshot(const bluetooth_control_snapshot_t *snapshot,
             ",\"rssi\":%d,\"hasRssi\":%s,\"keyboard\":%s,"
             "\"bonded\":%s,\"connected\":%s,"
             "\"reportDescriptorPresent\":%s,"
+            "\"reportDescriptorTooLarge\":%s,"
             "\"reportDescriptorValid\":%s,\"reportKeyboard\":%s,"
             "\"reportConsumerControl\":%s,\"reportNkro\":%s,"
             "\"reportIds\":%s}",
@@ -103,6 +104,7 @@ bool control_json_write_snapshot(const bluetooth_control_snapshot_t *snapshot,
             device->bonded ? "true" : "false",
             device->connected ? "true" : "false",
             device->report_descriptor_present ? "true" : "false",
+            device->report_descriptor_too_large ? "true" : "false",
             device->report_descriptor_valid ? "true" : "false",
             device->report_has_keyboard ? "true" : "false",
             device->report_has_consumer_control ? "true" : "false",

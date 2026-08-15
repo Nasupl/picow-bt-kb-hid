@@ -23,6 +23,7 @@ typedef struct {
     uint16_t hid_interrupt_psm;
     bool sdp_completed;
     bool report_descriptor_present;
+    bool report_descriptor_too_large;
     bool report_descriptor_valid;
     bool report_has_keyboard;
     bool report_has_consumer_control;

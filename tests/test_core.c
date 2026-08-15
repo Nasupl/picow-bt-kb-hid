@@ -254,6 +254,20 @@ static void test_sdp_parser(void) {
              sizeof(trailing_descriptor_data));
     assert(!device.report_descriptor_valid && !device.report_has_keyboard);
 
+    const uint8_t malformed_outer_sibling[] = {
+        0x35, 0x17, 0x35, 0x13, 0x08, 0x22, 0x25, 0x0f,
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0xc0, 0x35, 0xff,
+    };
+    feed_sdp(&parser, &device, 0x0206, malformed_outer_sibling,
+             sizeof(malformed_outer_sibling));
+    assert(!device.report_descriptor_valid && !device.report_has_keyboard);
+
+    sdp_parser_feed(&parser, &device, 0x0206, 257, 0, 0x35);
+    assert(device.report_descriptor_present &&
+           device.report_descriptor_too_large &&
+           !device.report_descriptor_valid);
+
     sdp_parser_reset(&parser);
     assert(parser.completed_attribute_count == 0);
     uint8_t malformed[] = {0x35, 0xff};
@@ -351,6 +365,13 @@ static void test_hid_report_descriptor(void) {
     assert(!hid_report_descriptor_parse(incomplete_usage_range,
                                         sizeof(incomplete_usage_range)).valid);
 
+    const uint8_t trailing_usage_minimum[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0xc0,
+        0x05, 0x07, 0x19, 0x04,
+    };
+    assert(!hid_report_descriptor_parse(trailing_usage_minimum,
+                                        sizeof(trailing_usage_minimum)).valid);
+
     const uint8_t delimited_application_usage[] = {
         0x05, 0x01, 0x09, 0x06, 0xa9, 0x01, 0x09,
         0x02, 0xa9, 0x00, 0xa1, 0x01, 0xc0,
@@ -358,6 +379,13 @@ static void test_hid_report_descriptor(void) {
     info = hid_report_descriptor_parse(delimited_application_usage,
                                        sizeof(delimited_application_usage));
     assert(info.valid && info.has_keyboard);
+
+    const uint8_t excess_collection_usage[] = {
+        0x05, 0x01, 0x09, 0x02, 0x09, 0x06, 0xa1, 0x01, 0xc0,
+    };
+    info = hid_report_descriptor_parse(excess_collection_usage,
+                                       sizeof(excess_collection_usage));
+    assert(info.valid && !info.has_keyboard);
 
     const uint8_t modifier_only_bitmap[] = {
         0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
@@ -367,6 +395,25 @@ static void test_hid_report_descriptor(void) {
     info = hid_report_descriptor_parse(modifier_only_bitmap,
                                        sizeof(modifier_only_bitmap));
     assert(info.valid && info.has_keyboard && !info.has_nkro_keyboard);
+
+    const uint8_t split_delimiter_nkro[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0x04, 0x29, 0x0b, 0xa9, 0x01, 0x19, 0x0c,
+        0x29, 0x13, 0xa9, 0x00, 0x75, 0x01, 0x95, 0x10,
+        0x81, 0x02, 0xc0,
+    };
+    info = hid_report_descriptor_parse(split_delimiter_nkro,
+                                       sizeof(split_delimiter_nkro));
+    assert(info.valid && info.has_keyboard && !info.has_nkro_keyboard);
+
+    const uint8_t excess_consumer_usage[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x09, 0x04, 0x05, 0x0c, 0x09, 0xe9, 0x75, 0x08,
+        0x95, 0x01, 0x81, 0x02, 0xc0,
+    };
+    info = hid_report_descriptor_parse(excess_consumer_usage,
+                                       sizeof(excess_consumer_usage));
+    assert(info.valid && info.has_keyboard && !info.has_consumer_control);
 
     const uint8_t malformed_end_collection[] = {
         0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0xc1, 0x00,
@@ -457,6 +504,7 @@ static void test_control_snapshot_json(void) {
     snapshot.devices[0].bonded = true;
     snapshot.devices[0].connected = true;
     snapshot.devices[0].report_descriptor_present = true;
+    snapshot.devices[0].report_descriptor_too_large = true;
     snapshot.devices[0].report_descriptor_valid = true;
     snapshot.devices[0].report_has_keyboard = true;
     snapshot.devices[0].report_has_nkro_keyboard = true;
@@ -474,6 +522,7 @@ static void test_control_snapshot_json(void) {
     assert(strstr(json, "\"rssi\":-42") != NULL);
     assert(strstr(json, "\"connected\":true") != NULL);
     assert(strstr(json, "\"reportDescriptorValid\":true") != NULL);
+    assert(strstr(json, "\"reportDescriptorTooLarge\":true") != NULL);
     assert(strstr(json, "\"reportKeyboard\":true") != NULL);
     assert(strstr(json, "\"reportNkro\":true") != NULL);
     assert(strstr(json, "\"reportIds\":true") != NULL);

@@ -336,6 +336,7 @@ static void start_sdp_discovery(void) {
         device->hid_service_found = false;
         device->sdp_completed = false;
         device->report_descriptor_present = false;
+        device->report_descriptor_too_large = false;
         device->report_descriptor_valid = false;
         device->report_has_keyboard = false;
         device->report_has_consumer_control = false;
@@ -1099,6 +1100,8 @@ void bluetooth_control_get_snapshot(bluetooth_control_snapshot_t *snapshot) {
         destination->connected = source->connected;
         destination->report_descriptor_present =
             source->report_descriptor_present;
+        destination->report_descriptor_too_large =
+            source->report_descriptor_too_large;
         destination->report_descriptor_valid = source->report_descriptor_valid;
         destination->report_has_keyboard = source->report_has_keyboard;
         destination->report_has_consumer_control =

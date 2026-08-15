@@ -62,10 +62,32 @@ static bool element_uint16(const DataElement *element, uint16_t *value) {
     return true;
 }
 
+static bool validate_element_tree(const uint8_t *buffer, uint16_t size,
+                                  unsigned depth) {
+    if (depth > 4) return false;
+    DataElement root;
+    if (!read_element(buffer, size, &root) || root.total_size != size) {
+        return false;
+    }
+    if (root.type != DE_TYPE_SEQUENCE) return true;
+    uint16_t offset = 0;
+    while (offset < root.data_size) {
+        DataElement child;
+        uint16_t remaining = (uint16_t) (root.data_size - offset);
+        if (!read_element(&root.data[offset], remaining, &child) ||
+            !validate_element_tree(&root.data[offset], child.total_size,
+                                   depth + 1)) {
+            return false;
+        }
+        offset = (uint16_t) (offset + child.total_size);
+    }
+    return offset == root.data_size;
+}
+
 static bool find_report_descriptor(const uint8_t *buffer, uint16_t size,
                                    unsigned depth, const uint8_t **descriptor,
                                    uint16_t *descriptor_size) {
-    if (depth > 4) return false;
+    if (depth > 4 || !validate_element_tree(buffer, size, depth)) return false;
     DataElement root;
     if (!read_element(buffer, size, &root) || root.type != DE_TYPE_SEQUENCE ||
         root.total_size != size) {
@@ -150,6 +172,7 @@ static void parse_attribute(Device *device, uint16_t attribute_id,
     if (attribute_id == SDP_ATTR_HID_DESCRIPTOR_LIST) {
         if (device == NULL) return;
         device->report_descriptor_present = true;
+        device->report_descriptor_too_large = false;
         device->report_descriptor_valid = false;
         device->report_has_keyboard = false;
         device->report_has_consumer_control = false;
@@ -225,6 +248,7 @@ void sdp_parser_feed(SdpParser *parser, Device *device,
     if (attribute_length > sizeof(parser->buffer)) {
         if (attribute_id == SDP_ATTR_HID_DESCRIPTOR_LIST && device != NULL) {
             device->report_descriptor_present = true;
+            device->report_descriptor_too_large = true;
             device->report_descriptor_valid = false;
             device->report_has_keyboard = false;
             device->report_has_consumer_control = false;
