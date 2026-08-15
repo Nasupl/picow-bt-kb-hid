@@ -34,6 +34,13 @@ typedef struct {
     bool keyboard;
     bool bonded;
     bool connected;
+    bool report_descriptor_present;
+    bool report_descriptor_too_large;
+    bool report_descriptor_valid;
+    bool report_has_keyboard;
+    bool report_has_consumer_control;
+    bool report_has_nkro_keyboard;
+    bool report_uses_ids;
 } bluetooth_control_device_t;
 
 typedef struct {

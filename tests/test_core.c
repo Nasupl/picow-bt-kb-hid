@@ -11,6 +11,7 @@
 #include "control_json.h"
 #include "hid_boot_report.h"
 #include "hid_channels.h"
+#include "hid_report_descriptor.h"
 #include "sdp_parser.h"
 
 const char *bd_addr_to_str(const uint8_t address[6]) {
@@ -217,22 +218,279 @@ static void test_sdp_parser(void) {
     const uint8_t service_name[] = {
         0x25, 0x08, 'K', 'e', 'y', 'b', 'o', 'a', 'r', 'd',
     };
+    const uint8_t hid_descriptor[] = {
+        0x35, 0x15, 0x35, 0x13, 0x08, 0x22, 0x25, 0x0f,
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0xc0,
+    };
 
     SdpParser parser = {0};
     Device device = {0};
     feed_sdp(&parser, &device, 0x0004, control, sizeof(control));
     feed_sdp(&parser, &device, 0x000d, interrupt, sizeof(interrupt));
     feed_sdp(&parser, &device, 0x0100, service_name, sizeof(service_name));
+    feed_sdp(&parser, &device, 0x0206, hid_descriptor,
+             sizeof(hid_descriptor));
     assert(device.hid_control_psm == 0x0011);
     assert(device.hid_interrupt_psm == 0x0013);
     assert(device.has_name && strcmp(device.name, "Keyboard") == 0);
-    assert(parser.completed_attribute_count == 3);
+    assert(device.report_descriptor_present && device.report_descriptor_valid);
+    assert(device.report_has_keyboard && !device.report_has_nkro_keyboard);
+    assert(parser.completed_attribute_count == 4);
+
+    const uint8_t malformed_descriptor[] = {0x35, 0x01, 0x00};
+    feed_sdp(&parser, &device, 0x0206, malformed_descriptor,
+             sizeof(malformed_descriptor));
+    assert(device.report_descriptor_present &&
+           !device.report_descriptor_valid && !device.report_has_keyboard &&
+           !device.report_has_consumer_control && !device.report_uses_ids);
+
+    const uint8_t trailing_descriptor_data[] = {
+        0x35, 0x16, 0x35, 0x14, 0x08, 0x22, 0x25, 0x0f,
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0xc0, 0x00,
+    };
+    feed_sdp(&parser, &device, 0x0206, trailing_descriptor_data,
+             sizeof(trailing_descriptor_data));
+    assert(!device.report_descriptor_valid && !device.report_has_keyboard);
+
+    const uint8_t malformed_outer_sibling[] = {
+        0x35, 0x17, 0x35, 0x13, 0x08, 0x22, 0x25, 0x0f,
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0xc0, 0x35, 0xff,
+    };
+    feed_sdp(&parser, &device, 0x0206, malformed_outer_sibling,
+             sizeof(malformed_outer_sibling));
+    assert(!device.report_descriptor_valid && !device.report_has_keyboard);
+
+    const uint8_t fixed_width_sequence[] = {0x30, 0x00};
+    feed_sdp(&parser, &device, 0x0206, fixed_width_sequence,
+             sizeof(fixed_width_sequence));
+    assert(!device.report_descriptor_valid && !device.report_has_keyboard);
+
+    const uint8_t extra_sequence_wrapper[] = {
+        0x35, 0x17, 0x35, 0x15, 0x35, 0x13, 0x08, 0x22,
+        0x25, 0x0f, 0x05, 0x01, 0x09, 0x06, 0xa1, 0x01,
+        0x05, 0x07, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0xc0,
+    };
+    feed_sdp(&parser, &device, 0x0206, extra_sequence_wrapper,
+             sizeof(extra_sequence_wrapper));
+    assert(!device.report_descriptor_valid && !device.report_has_keyboard);
+
+    const uint8_t physical_descriptor_first[] = {
+        0x35, 0x1c, 0x35, 0x05, 0x08, 0x23, 0x25, 0x01,
+        0x00, 0x35, 0x13, 0x08, 0x22, 0x25, 0x0f, 0x05,
+        0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07, 0x75,
+        0x01, 0x95, 0x08, 0x81, 0x02, 0xc0,
+    };
+    feed_sdp(&parser, &device, 0x0206, physical_descriptor_first,
+             sizeof(physical_descriptor_first));
+    assert(!device.report_descriptor_valid && !device.report_has_keyboard);
+
+    sdp_parser_feed(&parser, &device, 0x0206, 257, 0, 0x35);
+    assert(device.report_descriptor_present &&
+           device.report_descriptor_too_large &&
+           !device.report_descriptor_valid);
 
     sdp_parser_reset(&parser);
     assert(parser.completed_attribute_count == 0);
     uint8_t malformed[] = {0x35, 0xff};
     feed_sdp(&parser, &device, 0x0004, malformed, sizeof(malformed));
     assert(parser.completed_attribute_count == 1);
+}
+
+static void test_hid_report_descriptor(void) {
+    const uint8_t nkro[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0x00, 0x29, 0x67, 0x75, 0x01, 0x95, 0x68,
+        0x85, 0x01, 0x81, 0x02, 0xc0,
+    };
+    hid_report_descriptor_info_t info =
+        hid_report_descriptor_parse(nkro, sizeof(nkro));
+    assert(info.valid && info.has_keyboard && info.has_nkro_keyboard);
+    assert(info.uses_report_ids && !info.has_consumer_control);
+
+    const uint8_t consumer[] = {
+        0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x75, 0x10,
+        0x95, 0x01, 0x81, 0x00, 0xc0,
+    };
+    info = hid_report_descriptor_parse(consumer, sizeof(consumer));
+    assert(info.valid && info.has_consumer_control && !info.has_keyboard);
+
+    const uint8_t malformed[] = {0x05, 0x01, 0x09, 0x06, 0xa1, 0x01};
+    info = hid_report_descriptor_parse(malformed, sizeof(malformed));
+    assert(!info.valid);
+    assert(!info.has_keyboard && !info.has_consumer_control);
+
+    const uint8_t partial_then_truncated[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0xc0, 0x85,
+    };
+    info = hid_report_descriptor_parse(partial_then_truncated,
+                                       sizeof(partial_then_truncated));
+    assert(!info.valid && !info.has_keyboard && !info.uses_report_ids);
+
+    const uint8_t extended_usage[] = {
+        0x0b, 0x06, 0x00, 0x01, 0x00, 0xa1, 0x01, 0xc0,
+    };
+    info = hid_report_descriptor_parse(extended_usage,
+                                       sizeof(extended_usage));
+    assert(info.valid && info.has_keyboard);
+
+    const uint8_t usage_page_changed_after_usage[] = {
+        0x05, 0x01, 0x09, 0x06, 0x05, 0x0c, 0xa1, 0x01, 0xc0,
+    };
+    info = hid_report_descriptor_parse(usage_page_changed_after_usage,
+                                       sizeof(usage_page_changed_after_usage));
+    assert(info.valid && info.has_keyboard && !info.has_consumer_control);
+
+    const uint8_t constant_bitmap[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x75, 0x01, 0x95, 0x68, 0x81, 0x01, 0xc0,
+    };
+    info = hid_report_descriptor_parse(constant_bitmap,
+                                       sizeof(constant_bitmap));
+    assert(info.valid && info.has_keyboard && !info.has_nkro_keyboard);
+
+    const uint8_t data_array_bitmap[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x75, 0x01, 0x95, 0x68, 0x81, 0x00, 0xc0,
+    };
+    info = hid_report_descriptor_parse(data_array_bitmap,
+                                       sizeof(data_array_bitmap));
+    assert(info.valid && info.has_keyboard && !info.has_nkro_keyboard);
+
+    const uint8_t nkro_page_changed_before_input[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0x04, 0x29, 0x68, 0x05, 0xff, 0x75, 0x01,
+        0x95, 0x65, 0x81, 0x02, 0xc0,
+    };
+    info = hid_report_descriptor_parse(nkro_page_changed_before_input,
+                                       sizeof(nkro_page_changed_before_input));
+    assert(info.valid && info.has_nkro_keyboard);
+
+    const uint8_t consumer_inside_keyboard[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x0c,
+        0x09, 0xe9, 0x75, 0x01, 0x95, 0x01, 0x81, 0x02, 0xc0,
+    };
+    info = hid_report_descriptor_parse(consumer_inside_keyboard,
+                                       sizeof(consumer_inside_keyboard));
+    assert(info.valid && info.has_keyboard && info.has_consumer_control);
+
+    const uint8_t unclosed_delimiter[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa9, 0x01, 0xa1, 0x01, 0xc0,
+    };
+    assert(!hid_report_descriptor_parse(unclosed_delimiter,
+                                        sizeof(unclosed_delimiter)).valid);
+
+    const uint8_t incomplete_usage_range[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0x04, 0x75, 0x01, 0x95, 0x10, 0x81, 0x02, 0xc0,
+    };
+    assert(!hid_report_descriptor_parse(incomplete_usage_range,
+                                        sizeof(incomplete_usage_range)).valid);
+
+    const uint8_t trailing_usage_minimum[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0xc0,
+        0x05, 0x07, 0x19, 0x04,
+    };
+    assert(!hid_report_descriptor_parse(trailing_usage_minimum,
+                                        sizeof(trailing_usage_minimum)).valid);
+
+    const uint8_t delimited_application_usage[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa9, 0x01, 0x09,
+        0x02, 0xa9, 0x00, 0xa1, 0x01, 0xc0,
+    };
+    info = hid_report_descriptor_parse(delimited_application_usage,
+                                       sizeof(delimited_application_usage));
+    assert(info.valid && info.has_keyboard);
+
+    const uint8_t excess_collection_usage[] = {
+        0x05, 0x01, 0x09, 0x02, 0x09, 0x06, 0xa1, 0x01, 0xc0,
+    };
+    info = hid_report_descriptor_parse(excess_collection_usage,
+                                       sizeof(excess_collection_usage));
+    assert(info.valid && !info.has_keyboard);
+
+    const uint8_t modifier_only_bitmap[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0xe0, 0x29, 0xe7, 0x75, 0x01, 0x95, 0x10,
+        0x81, 0x02, 0xc0,
+    };
+    info = hid_report_descriptor_parse(modifier_only_bitmap,
+                                       sizeof(modifier_only_bitmap));
+    assert(info.valid && info.has_keyboard && !info.has_nkro_keyboard);
+
+    const uint8_t split_delimiter_nkro[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0x04, 0x29, 0x0b, 0xa9, 0x01, 0x19, 0x0c,
+        0x29, 0x13, 0xa9, 0x00, 0x75, 0x01, 0x95, 0x10,
+        0x81, 0x02, 0xc0,
+    };
+    info = hid_report_descriptor_parse(split_delimiter_nkro,
+                                       sizeof(split_delimiter_nkro));
+    assert(info.valid && info.has_keyboard && !info.has_nkro_keyboard);
+
+    const uint8_t excess_consumer_usage[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x09, 0x04, 0x05, 0x0c, 0x09, 0xe9, 0x75, 0x08,
+        0x95, 0x01, 0x81, 0x02, 0xc0,
+    };
+    info = hid_report_descriptor_parse(excess_consumer_usage,
+                                       sizeof(excess_consumer_usage));
+    assert(info.valid && info.has_keyboard && !info.has_consumer_control);
+
+    const uint8_t consumer_array_alternative[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x09, 0x04, 0x0b, 0xe9, 0x00, 0x0c, 0x00, 0x75,
+        0x08, 0x95, 0x01, 0x81, 0x00, 0xc0,
+    };
+    info = hid_report_descriptor_parse(consumer_array_alternative,
+                                       sizeof(consumer_array_alternative));
+    assert(info.valid && info.has_keyboard && info.has_consumer_control);
+
+    const uint8_t unassigned_consumer_usage[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x0c,
+        0x09, 0x00, 0x75, 0x08, 0x95, 0x01, 0x81, 0x00, 0xc0,
+    };
+    info = hid_report_descriptor_parse(unassigned_consumer_usage,
+                                       sizeof(unassigned_consumer_usage));
+    assert(info.valid && info.has_keyboard && !info.has_consumer_control);
+
+    const uint8_t non_key_bitmap[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x05, 0x07,
+        0x19, 0x00, 0x29, 0x08, 0x75, 0x01, 0x95, 0x09,
+        0x81, 0x02, 0xc0,
+    };
+    info = hid_report_descriptor_parse(non_key_bitmap,
+                                       sizeof(non_key_bitmap));
+    assert(info.valid && info.has_keyboard && !info.has_nkro_keyboard);
+
+    const uint8_t collection_without_usage[] = {0xa1, 0x01, 0xc0};
+    assert(!hid_report_descriptor_parse(collection_without_usage,
+                                        sizeof(collection_without_usage)).valid);
+
+    const uint8_t consumer_at_position_65535[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0x06, 0x00,
+        0xff, 0x1a, 0x00, 0x00, 0x2a, 0xfe, 0xff, 0x05,
+        0x0c, 0x09, 0xe9, 0x75, 0x01, 0x97, 0x00, 0x00,
+        0x01, 0x00, 0x81, 0x02, 0xc0,
+    };
+    info = hid_report_descriptor_parse(consumer_at_position_65535,
+                                       sizeof(consumer_at_position_65535));
+    assert(info.valid && info.has_keyboard && info.has_consumer_control);
+
+    const uint8_t malformed_end_collection[] = {
+        0x05, 0x01, 0x09, 0x06, 0xa1, 0x01, 0xc1, 0x00,
+    };
+    assert(!hid_report_descriptor_parse(malformed_end_collection,
+                                        sizeof(malformed_end_collection)).valid);
+
+    const uint8_t mouse[] = {
+        0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0xc0,
+    };
+    info = hid_report_descriptor_parse(mouse, sizeof(mouse));
+    assert(info.valid && !info.has_keyboard && !info.has_consumer_control);
+    assert(!hid_report_descriptor_parse(NULL, 0).valid);
 }
 
 static void test_control_commands(void) {
@@ -309,6 +567,12 @@ static void test_control_snapshot_json(void) {
     snapshot.devices[0].keyboard = true;
     snapshot.devices[0].bonded = true;
     snapshot.devices[0].connected = true;
+    snapshot.devices[0].report_descriptor_present = true;
+    snapshot.devices[0].report_descriptor_too_large = true;
+    snapshot.devices[0].report_descriptor_valid = true;
+    snapshot.devices[0].report_has_keyboard = true;
+    snapshot.devices[0].report_has_nkro_keyboard = true;
+    snapshot.devices[0].report_uses_ids = true;
 
     char json[768];
     size_t written = 0;
@@ -321,6 +585,11 @@ static void test_control_snapshot_json(void) {
     assert(strstr(json, "Key\\\"board\\\\test\\u000a") != NULL);
     assert(strstr(json, "\"rssi\":-42") != NULL);
     assert(strstr(json, "\"connected\":true") != NULL);
+    assert(strstr(json, "\"reportDescriptorValid\":true") != NULL);
+    assert(strstr(json, "\"reportDescriptorTooLarge\":true") != NULL);
+    assert(strstr(json, "\"reportKeyboard\":true") != NULL);
+    assert(strstr(json, "\"reportNkro\":true") != NULL);
+    assert(strstr(json, "\"reportIds\":true") != NULL);
 
     char too_small[16];
     assert(!control_json_write_snapshot(&snapshot, too_small,
@@ -351,6 +620,7 @@ int main(void) {
     test_bluetooth_state_machine();
     test_hid_channel_state();
     test_sdp_parser();
+    test_hid_report_descriptor();
     test_control_commands();
     test_control_request_queue();
     test_control_snapshot_json();

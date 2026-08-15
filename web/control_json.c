@@ -93,11 +93,23 @@ bool control_json_write_snapshot(const bluetooth_control_snapshot_t *snapshot,
         append_format(
             &writer,
             ",\"rssi\":%d,\"hasRssi\":%s,\"keyboard\":%s,"
-            "\"bonded\":%s,\"connected\":%s}",
+            "\"bonded\":%s,\"connected\":%s,"
+            "\"reportDescriptorPresent\":%s,"
+            "\"reportDescriptorTooLarge\":%s,"
+            "\"reportDescriptorValid\":%s,\"reportKeyboard\":%s,"
+            "\"reportConsumerControl\":%s,\"reportNkro\":%s,"
+            "\"reportIds\":%s}",
             device->rssi, device->has_rssi ? "true" : "false",
             device->keyboard ? "true" : "false",
             device->bonded ? "true" : "false",
-            device->connected ? "true" : "false");
+            device->connected ? "true" : "false",
+            device->report_descriptor_present ? "true" : "false",
+            device->report_descriptor_too_large ? "true" : "false",
+            device->report_descriptor_valid ? "true" : "false",
+            device->report_has_keyboard ? "true" : "false",
+            device->report_has_consumer_control ? "true" : "false",
+            device->report_has_nkro_keyboard ? "true" : "false",
+            device->report_uses_ids ? "true" : "false");
     }
     append_format(&writer, "]}");
 

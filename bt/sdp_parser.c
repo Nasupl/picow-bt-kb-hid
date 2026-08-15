@@ -4,33 +4,65 @@
 #include <stddef.h>
 #include <string.h>
 
+#include "hid_report_descriptor.h"
 #include "usb_serial.h"
 
 #define SDP_ATTR_PROTOCOL_DESCRIPTOR_LIST 0x0004
 #define SDP_ATTR_ADDITIONAL_PROTOCOL_DESCRIPTOR_LISTS 0x000d
 #define SDP_ATTR_SERVICE_NAME 0x0100
 #define SDP_ATTR_PROVIDER_NAME 0x0102
+#define SDP_ATTR_HID_DESCRIPTOR_LIST 0x0206
 
 #define DE_TYPE_UINT 1
+#define DE_TYPE_INT 2
 #define DE_TYPE_UUID 3
 #define DE_TYPE_STRING 4
+#define DE_TYPE_BOOL 5
 #define DE_TYPE_SEQUENCE 6
+#define DE_TYPE_ALTERNATIVE 7
+#define DE_TYPE_URL 8
 
 typedef struct {
     uint8_t type;
+    uint8_t size_index;
     const uint8_t *data;
     uint16_t data_size;
     uint16_t total_size;
 } DataElement;
 
+static bool size_index_valid(uint8_t type, uint8_t size_index) {
+    switch (type) {
+        case 0:
+            return size_index == 0;
+        case DE_TYPE_UINT:
+        case DE_TYPE_INT:
+            return size_index <= 4;
+        case DE_TYPE_UUID:
+            return size_index == 1 || size_index == 2 || size_index == 4;
+        case DE_TYPE_STRING:
+        case DE_TYPE_SEQUENCE:
+        case DE_TYPE_ALTERNATIVE:
+        case DE_TYPE_URL:
+            return size_index >= 5;
+        case DE_TYPE_BOOL:
+            return size_index == 0;
+        default:
+            return false;
+    }
+}
+
 static bool read_element(const uint8_t *buffer, uint16_t available,
                          DataElement *element) {
     if (buffer == NULL || element == NULL || available == 0) return false;
 
+    uint8_t type = buffer[0] >> 3;
     uint8_t size_index = buffer[0] & 7;
+    if (!size_index_valid(type, size_index)) return false;
     uint16_t header_size = 1;
     uint32_t data_size;
-    if (size_index <= 4) {
+    if (type == 0) {
+        data_size = 0;
+    } else if (size_index <= 4) {
         data_size = 1u << size_index;
     } else {
         uint8_t length_bytes = (uint8_t) (1u << (size_index - 5));
@@ -44,7 +76,8 @@ static bool read_element(const uint8_t *buffer, uint16_t available,
     if (data_size > UINT16_MAX ||
         header_size + data_size > available) return false;
 
-    element->type = buffer[0] >> 3;
+    element->type = type;
+    element->size_index = size_index;
     element->data = &buffer[header_size];
     element->data_size = (uint16_t) data_size;
     element->total_size = (uint16_t) (header_size + data_size);
@@ -58,6 +91,71 @@ static bool element_uint16(const DataElement *element, uint16_t *value) {
     }
     *value = (uint16_t) ((element->data[0] << 8) | element->data[1]);
     return true;
+}
+
+static bool validate_element_tree(const uint8_t *buffer, uint16_t size,
+                                  unsigned depth) {
+    if (depth > 4) return false;
+    DataElement root;
+    if (!read_element(buffer, size, &root) || root.total_size != size) {
+        return false;
+    }
+    if (root.type != DE_TYPE_SEQUENCE) return true;
+    uint16_t offset = 0;
+    while (offset < root.data_size) {
+        DataElement child;
+        uint16_t remaining = (uint16_t) (root.data_size - offset);
+        if (!read_element(&root.data[offset], remaining, &child) ||
+            !validate_element_tree(&root.data[offset], child.total_size,
+                                   depth + 1)) {
+            return false;
+        }
+        offset = (uint16_t) (offset + child.total_size);
+    }
+    return offset == root.data_size;
+}
+
+static bool find_report_descriptor(const uint8_t *buffer, uint16_t size,
+                                   const uint8_t **descriptor,
+                                   uint16_t *descriptor_size) {
+    if (!validate_element_tree(buffer, size, 0)) return false;
+    DataElement root;
+    if (!read_element(buffer, size, &root) || root.type != DE_TYPE_SEQUENCE ||
+        root.total_size != size) {
+        return false;
+    }
+    bool found = false;
+    uint16_t offset = 0;
+    unsigned entry_index = 0;
+    while (offset < root.data_size) {
+        DataElement child, kind, value;
+        if (!read_element(&root.data[offset],
+                          (uint16_t) (root.data_size - offset), &child)) {
+            return false;
+        }
+        if (child.type != DE_TYPE_SEQUENCE ||
+            !read_element(child.data, child.data_size, &kind) ||
+            kind.type != DE_TYPE_UINT || kind.data_size != 1 ||
+            kind.total_size >= child.data_size ||
+            !read_element(&child.data[kind.total_size],
+                          (uint16_t) (child.data_size - kind.total_size),
+                          &value) || value.type != DE_TYPE_STRING ||
+            kind.total_size + value.total_size != child.data_size) {
+            return false;
+        }
+        if ((entry_index == 0 && kind.data[0] != 0x22) ||
+            (entry_index != 0 && kind.data[0] == 0x22)) {
+            return false;
+        }
+        if (entry_index == 0) {
+            *descriptor = value.data;
+            *descriptor_size = value.data_size;
+            found = true;
+        }
+        offset = (uint16_t) (offset + child.total_size);
+        ++entry_index;
+    }
+    return found;
 }
 
 static bool find_l2cap_psm(const uint8_t *buffer, uint16_t size,
@@ -102,6 +200,37 @@ static bool find_l2cap_psm(const uint8_t *buffer, uint16_t size,
 
 static void parse_attribute(Device *device, uint16_t attribute_id,
                             const uint8_t *buffer, uint16_t length) {
+    if (attribute_id == SDP_ATTR_HID_DESCRIPTOR_LIST) {
+        if (device == NULL) return;
+        device->report_descriptor_present = true;
+        device->report_descriptor_too_large = false;
+        device->report_descriptor_valid = false;
+        device->report_has_keyboard = false;
+        device->report_has_consumer_control = false;
+        device->report_has_nkro_keyboard = false;
+        device->report_uses_ids = false;
+        const uint8_t *descriptor;
+        uint16_t descriptor_size;
+        if (!find_report_descriptor(buffer, length, &descriptor,
+                                    &descriptor_size)) {
+            usb_serial_printf("[BT] HID Report Descriptor malformed\r\n");
+            return;
+        }
+        hid_report_descriptor_info_t info = hid_report_descriptor_parse(
+            descriptor, descriptor_size);
+        device->report_descriptor_valid = info.valid;
+        device->report_has_keyboard = info.has_keyboard;
+        device->report_has_consumer_control = info.has_consumer_control;
+        device->report_has_nkro_keyboard = info.has_nkro_keyboard;
+        device->report_uses_ids = info.uses_report_ids;
+        usb_serial_printf(
+            "[BT] HID Report Descriptor valid=%u keyboard=%u consumer=%u "
+            "nkro=%u report_ids=%u bytes=%u\r\n",
+            info.valid, info.has_keyboard, info.has_consumer_control,
+            info.has_nkro_keyboard, info.uses_report_ids,
+            (unsigned int) descriptor_size);
+        return;
+    }
     if (attribute_id == SDP_ATTR_PROTOCOL_DESCRIPTOR_LIST ||
         attribute_id == SDP_ATTR_ADDITIONAL_PROTOCOL_DESCRIPTOR_LISTS) {
         uint16_t psm;
@@ -145,8 +274,20 @@ void sdp_parser_feed(SdpParser *parser, Device *device,
                      uint16_t attribute_id, uint16_t attribute_length,
                      uint16_t attribute_offset, uint8_t data) {
     if (parser == NULL || attribute_length == 0 ||
-        attribute_length > sizeof(parser->buffer) ||
         attribute_offset >= attribute_length) return;
+
+    if (attribute_length > sizeof(parser->buffer)) {
+        if (attribute_id == SDP_ATTR_HID_DESCRIPTOR_LIST && device != NULL) {
+            device->report_descriptor_present = true;
+            device->report_descriptor_too_large = true;
+            device->report_descriptor_valid = false;
+            device->report_has_keyboard = false;
+            device->report_has_consumer_control = false;
+            device->report_has_nkro_keyboard = false;
+            device->report_uses_ids = false;
+        }
+        return;
+    }
 
     parser->buffer[attribute_offset] = data;
     if (attribute_offset + 1 == attribute_length) {
