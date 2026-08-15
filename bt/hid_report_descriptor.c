@@ -207,7 +207,8 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
                 usage_minimum_pending = false;
             }
         } else if (type == HID_TYPE_LOCAL && tag == HID_LOCAL_DELIMITER) {
-            if (data_size != 1 || (value != 0 && value != 1) ||
+            if (usage_minimum_pending || data_size != 1 ||
+                (value != 0 && value != 1) ||
                 (value == 1 && delimiter_open) ||
                 (value == 0 && !delimiter_open)) {
                 return invalid_descriptor();
@@ -261,6 +262,7 @@ hid_report_descriptor_info_t hid_report_descriptor_parse(
                         info.has_nkro_keyboard = true;
                     }
                     if ((value & 1u) == 0 &&
+                        usage_sets[i].first_consumer_position != UINT16_MAX &&
                         usage_sets[i].first_consumer_position <
                             global.report_count) {
                         info.has_consumer_control = true;
